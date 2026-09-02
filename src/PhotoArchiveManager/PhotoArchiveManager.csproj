@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>PhotoArchiveManager</AssemblyName>
+    <RootNamespace>PhotoArchiveManager</RootNamespace>
+    <ApplicationIcon>Assets\PhotoArchiveManager.ico</ApplicationIcon>
+    <Version>1.7.1</Version>
+    <AssemblyVersion>1.7.1.0</AssemblyVersion>
+    <FileVersion>1.7.1.0</FileVersion>
+    <Authors>Привалов Олег</Authors>
+    <Company>Привалов Олег</Company>
+    <Product>Photo Archive Manager</Product>
+    <Description>Локальный менеджер семейного фотоархива</Description>
+    <Copyright>© 2026 Привалов Олег</Copyright>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>None</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
+    <RunAnalyzersDuringLiveAnalysis>false</RunAnalyzersDuringLiveAnalysis>
+    <!-- OpenCvSharp 4.13 analyzer was compiled with Roslyn 4.14 while the clean-build SDK currently uses 4.11. Runtime is unaffected. -->
+    <NoWarn>$(NoWarn);CS9057</NoWarn>
+  </PropertyGroup>
+
+  <!-- Compatibility guard for users who unpack a new source release over an older PAM tree.
+       These files belonged to the removed CLIP/semantic-search feature and must never be compiled. -->
+  <ItemGroup>
+    <Compile Remove="Services\SemanticAnalyzer.cs" />
+    <Compile Remove="Services\SemanticModelService.cs" />
+    <Compile Remove="Services\ClipTokenizer.cs" />
+    <Compile Remove="Services\RussianPhotoQueryTranslator.cs" />
+    <Compile Remove="Models\Semantic*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.30" />
+    <PackageReference Include="MetadataExtractor" Version="2.9.3" />
+    <!-- Direct reference suppresses the OpenCvSharp analyzer built with a newer compiler; runtime assets remain unchanged. -->
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" ExcludeAssets="analyzers" />
+    <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260627" ExcludeAssets="analyzers" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\PhotoArchiveManager.ico" />
+    <EmbeddedResource Include="Assets\haarcascade_frontalface_default.xml" />
+    <EmbeddedResource Include="Assets\haarcascade_eye_tree_eyeglasses.xml" />
+    <EmbeddedResource Include="Assets\face_recognition_sface_2021dec.onnx" />
+    <EmbeddedResource Include="Assets\face_detection_yunet_2023mar.onnx" />
+  </ItemGroup>
+  <!-- Defense in depth: remove OpenCvSharp analyzers even if a transitive package adds them back. -->
+  <Target Name="RemoveIncompatibleOpenCvSharpAnalyzers" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <_OpenCvSharpAnalyzer Include="@(Analyzer)" Condition="'%(Analyzer.Filename)' == 'OpenCvSharp.Analyzers'" />
+      <Analyzer Remove="@(_OpenCvSharpAnalyzer)" />
+    </ItemGroup>
+  </Target>
+
+</Project>

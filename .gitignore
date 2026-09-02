@@ -1,0 +1,8 @@
+.tools/
+BUILD_OUTPUT/
+**/bin/
+**/obj/
+.vs/
+Data/
+*.user
+*.suo

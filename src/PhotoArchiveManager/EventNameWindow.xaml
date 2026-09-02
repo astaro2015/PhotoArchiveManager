@@ -1,0 +1,27 @@
+<Window x:Class="PhotoArchiveManager.EventNameWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Icon="Assets/PhotoArchiveManager.ico"
+        Title="Название события" Width="520" SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{StaticResource SurfaceBrush}">
+    <Grid Margin="24,22,24,20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Text="Как назвать это событие?" FontSize="17" FontWeight="SemiBold"/>
+        <TextBox x:Name="NameBox" Grid.Row="1" Margin="0,14,0,0" MaxLength="160"/>
+        <TextBlock Grid.Row="2" Margin="0,9,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap"
+                   Text="Ручное название закрепляет событие: новый автоматический анализ его не пересоберёт."/>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button Content="Отмена" IsCancel="True" MinWidth="92" Margin="0"/>
+            <Button Content="OK" IsDefault="True" MinWidth="92" Margin="8,0,0,0"
+                    Click="Ok_Click" Style="{StaticResource PrimaryButtonStyle}"/>
+        </StackPanel>
+    </Grid>
+</Window>
