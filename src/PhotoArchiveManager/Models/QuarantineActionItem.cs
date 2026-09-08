@@ -1,3 +1,4 @@
+using PhotoArchiveManager.Infrastructure;
 namespace PhotoArchiveManager.Models;
 
 public sealed class QuarantineActionItem
@@ -6,8 +7,11 @@ public sealed class QuarantineActionItem
     public long FileId { get; init; }
     public string OriginalPath { get; init; } = "";
     public string QuarantinePath { get; init; } = "";
+    public string OriginalSourceFolder { get; init; } = "";
     public string Sha256 { get; init; } = "";
     public long FileSize { get; init; }
+    public long OriginalLastWriteUtcTicks { get; init; }
+    public long OriginalCreationUtcTicks { get; init; }
     public string CreatedUtc { get; init; } = "";
     public string? UndoneUtc { get; init; }
     public string? PermanentlyDeletedUtc { get; init; }
@@ -18,7 +22,7 @@ public sealed class QuarantineActionItem
     public string FileName => Path.GetFileName(OriginalPath);
     public string CurrentPath => IsActive ? QuarantinePath : IsPermanentlyDeleted ? "" : OriginalPath;
     public string FileSizeDisplay => ByteFormatter.Format(FileSize);
-    public string CreatedDisplay => DateTime.TryParse(CreatedUtc, out var value)
+    public string CreatedDisplay => StoredDateTime.TryParseRoundTripUtc(CreatedUtc, out var value)
         ? value.ToLocalTime().ToString("dd.MM.yyyy HH:mm:ss")
         : CreatedUtc;
     public string StatusDisplay => IsPermanentlyDeleted ? "Удалён окончательно" : IsActive ? "В карантине" : "Восстановлен";

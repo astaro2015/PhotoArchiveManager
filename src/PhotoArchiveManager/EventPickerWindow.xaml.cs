@@ -7,14 +7,11 @@ public partial class EventPickerWindow : Window
 {
     public IReadOnlyList<EventGroupItem> Events { get; }
     public EventGroupItem? SelectedEvent { get; set; }
-    public string EventName => NameBox.Text;
-
-    public EventPickerWindow(IReadOnlyList<EventGroupItem> events, string initialName)
+    public EventPickerWindow(IReadOnlyList<EventGroupItem> events)
     {
         InitializeComponent();
         Events = events;
         SelectedEvent = events.FirstOrDefault();
-        NameBox.Text = initialName ?? "";
         DataContext = this;
     }
 

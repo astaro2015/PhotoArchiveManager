@@ -1,3 +1,4 @@
+using PhotoArchiveManager.Infrastructure;
 namespace PhotoArchiveManager.Models;
 
 public sealed class DuplicateFileItem
@@ -16,7 +17,7 @@ public sealed class DuplicateFileItem
     public string Sha256 { get; init; } = "";
 
     public string CaptureDateDisplay =>
-        DateTime.TryParse(CaptureDate, out var value) ? value.ToString("dd.MM.yyyy HH:mm:ss") : "Дата: неизвестна";
+        StoredDateTime.TryParse(CaptureDate, out var value) ? value.ToString("dd.MM.yyyy HH:mm:ss") : "Дата: неизвестна";
 
     public string DimensionsDisplay => Width > 0 && Height > 0 ? $"{Width} × {Height}" : "Размер: —";
 

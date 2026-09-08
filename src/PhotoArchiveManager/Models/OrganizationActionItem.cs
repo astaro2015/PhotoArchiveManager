@@ -1,3 +1,4 @@
+using PhotoArchiveManager.Infrastructure;
 namespace PhotoArchiveManager.Models;
 
 public sealed class OrganizationActionItem
@@ -10,6 +11,8 @@ public sealed class OrganizationActionItem
     public string NewSourceFolder { get; init; } = "";
     public string Sha256 { get; init; } = "";
     public long FileSize { get; init; }
+    public long OriginalLastWriteUtcTicks { get; init; }
+    public long OriginalCreationUtcTicks { get; init; }
     public string CreatedUtc { get; init; } = "";
     public string? UndoneUtc { get; init; }
     public string Error { get; init; } = "";
@@ -18,5 +21,5 @@ public sealed class OrganizationActionItem
     public string FileName => Path.GetFileName(NewPath);
     public string FileSizeDisplay => ByteFormatter.Format(FileSize);
     public string StatusDisplay => IsActive ? "Перемещён · Undo доступен" : "Отменено";
-    public string DateDisplay => DateTime.TryParse(CreatedUtc, out var dt) ? dt.ToLocalTime().ToString("dd.MM.yyyy HH:mm") : CreatedUtc;
+    public string DateDisplay => StoredDateTime.TryParseRoundTripUtc(CreatedUtc, out var dt) ? dt.ToLocalTime().ToString("dd.MM.yyyy HH:mm") : CreatedUtc;
 }

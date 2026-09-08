@@ -1,3 +1,3 @@
-namespace PhotoArchiveManager.Models;
+﻿namespace PhotoArchiveManager.Models;
 
-public sealed record FileSignature(long FileSize, long LastWriteUtcTicks);
+public sealed record FileSignature(long FileSize, long LastWriteUtcTicks, bool HasIndexError);

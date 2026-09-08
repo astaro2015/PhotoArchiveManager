@@ -297,15 +297,23 @@ public sealed class BurstAnalyzer
                     AverageHashDistanceFromRepresentative = BitOperations.PopCount(a ^ repA),
                     HasQuality = quality,
                     QualityScore = quality ? t.Item.QualityScore : -1,
+                    TechnicalScore = quality ? t.Item.TechnicalScore : -1,
                     SharpnessScore = quality ? t.Item.SharpnessScore : -1,
                     BlurScore = quality ? t.Item.BlurScore : -1,
                     ExposureScore = quality ? t.Item.ExposureScore : -1,
+                    ContrastScore = quality ? t.Item.ContrastScore : -1,
+                    NoiseScore = quality ? t.Item.NoiseScore : -1,
                     ResolutionScore = quality ? t.Item.ResolutionScore : -1,
                     CompressionScore = quality ? t.Item.CompressionScore : -1,
                     FaceCount = quality ? t.Item.FaceCount : -1,
                     EyeCount = quality ? t.Item.EyeCount : -1,
                     FaceScore = quality ? t.Item.FaceScore : -1,
                     EyeScore = quality ? t.Item.EyeScore : -1,
+                    FacePoseScore = quality ? t.Item.FacePoseScore : -1,
+                    WorstFaceScore = quality ? t.Item.WorstFaceScore : -1,
+                    EyeOpennessScore = quality ? t.Item.EyeOpennessScore : -1,
+                    ClosedEyeCount = quality ? t.Item.ClosedEyeCount : -1,
+                    BlinkPenalty = quality ? t.Item.BlinkPenalty : 0,
                     QualityNotes = quality ? t.Item.QualityNotes : ""
                 };
             })
@@ -357,7 +365,7 @@ public sealed class BurstAnalyzer
     private static double AspectRatio(PerceptualHashCandidate item)
     {
         if (item.Width <= 0 || item.Height <= 0) return 0;
-        return item.Orientation is 6 or 8
+        return ExifOrientationHelper.SwapsDimensions(item.Orientation)
             ? item.Height / (double)item.Width
             : item.Width / (double)item.Height;
     }
@@ -372,14 +380,14 @@ public sealed class BurstAnalyzer
         // EXIF and an explicit catalog-only manual correction are trusted.
         // Copying an old archive can give thousands of unrelated files nearly identical mtimes.
         if (!CaptureDatePolicy.IsTrusted(item.CaptureDateSource)) return false;
-        return DateTime.TryParse(item.CaptureDate, out value);
+        return StoredDateTime.TryParse(item.CaptureDate, out value);
     }
 
     private static DateTime ParseCaptureDate(PerceptualHashCandidate item) =>
-        DateTime.TryParse(item.CaptureDate, out var value) ? value : DateTime.MinValue;
+        StoredDateTime.TryParse(item.CaptureDate, out var value) ? value : DateTime.MinValue;
 
     private static DateTime ParseCaptureDate(string? value) =>
-        DateTime.TryParse(value, out var parsed) ? parsed : DateTime.MinValue;
+        StoredDateTime.TryParse(value, out var parsed) ? parsed : DateTime.MinValue;
 
     private sealed record TimedCandidate(PerceptualHashCandidate Item, DateTime Time);
 }

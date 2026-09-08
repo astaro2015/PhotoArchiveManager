@@ -20,7 +20,7 @@ public sealed class FaceItem : ObservableObject
     public double QualityScore { get; init; }
     public bool IsIgnored { get; init; }
 
-    public string CaptureDateDisplay => DateTime.TryParse(CaptureDate, out var value)
+    public string CaptureDateDisplay => StoredDateTime.TryParse(CaptureDate, out var value)
         ? value.ToString("dd.MM.yyyy HH:mm")
         : "Дата неизвестна";
     public string QualityDisplay => $"лицо {QualityScore:0}/100";

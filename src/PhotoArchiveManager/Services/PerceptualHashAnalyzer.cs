@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using PhotoArchiveManager.Infrastructure;
@@ -78,6 +78,9 @@ public sealed class PerceptualHashAnalyzer
                         });
 
                         var hashes = await Task.Run(() => ComputeHashes(item.FullPath, item.Orientation), token);
+                        var after = new FileInfo(item.FullPath);
+                        if (!after.Exists || after.Length != item.FileSize || after.LastWriteTimeUtc.Ticks != item.LastWriteUtcTicks)
+                            throw new IOException("Файл изменился во время расчёта визуального отпечатка. Выполните повторное сканирование библиотеки.");
                         await _database.UpdatePerceptualHashAsync(
                             connection,
                             item.Id,
@@ -158,21 +161,10 @@ public sealed class PerceptualHashAnalyzer
 
     internal static (string DHash, string AHash) ComputeHashes(string path, int orientation)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan);
-        var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-        if (decoder.Frames.Count == 0) throw new InvalidDataException("Изображение не содержит декодируемого кадра.");
-        BitmapSource source = decoder.Frames[0];
-        if (source.PixelWidth <= 0 || source.PixelHeight <= 0) throw new InvalidDataException("Некорректный размер изображения.");
-
-        // Normalize the common EXIF rotation cases before hashing. This helps match an original
-        // camera JPEG to a messenger/editor copy that physically rotated pixels and removed EXIF.
-        if (orientation is 3 or 6 or 8)
-        {
-            var angle = orientation == 3 ? 180 : orientation == 6 ? 90 : 270;
-            var rotated = new TransformedBitmap(source, new RotateTransform(angle));
-            rotated.Freeze();
-            source = rotated;
-        }
+        // dHash/aHash only need a tiny working image. Decoding a 50 MP JPEG in full merely to
+        // reduce it to 9x8 wastes memory and CPU, so v2 asks WIC for a bounded 256 px decode.
+        // ImageMatLoader also normalizes all eight EXIF Orientation values.
+        BitmapSource source = ImageMatLoader.LoadBitmapSource(path, orientation, 256);
 
         var scaled = new TransformedBitmap(source,
             new ScaleTransform(9.0 / source.PixelWidth, 8.0 / source.PixelHeight));
@@ -325,15 +317,23 @@ public sealed class PerceptualHashAnalyzer
                     AverageHashDistanceFromRepresentative = BitOperations.PopCount(aHashes[x] ^ repA),
                     HasQuality = items[x].HasValidCachedQuality,
                     QualityScore = items[x].HasValidCachedQuality ? items[x].QualityScore : -1,
+                    TechnicalScore = items[x].HasValidCachedQuality ? items[x].TechnicalScore : -1,
                     SharpnessScore = items[x].HasValidCachedQuality ? items[x].SharpnessScore : -1,
                     BlurScore = items[x].HasValidCachedQuality ? items[x].BlurScore : -1,
                     ExposureScore = items[x].HasValidCachedQuality ? items[x].ExposureScore : -1,
+                    ContrastScore = items[x].HasValidCachedQuality ? items[x].ContrastScore : -1,
+                    NoiseScore = items[x].HasValidCachedQuality ? items[x].NoiseScore : -1,
                     ResolutionScore = items[x].HasValidCachedQuality ? items[x].ResolutionScore : -1,
                     CompressionScore = items[x].HasValidCachedQuality ? items[x].CompressionScore : -1,
                     FaceCount = items[x].HasValidCachedQuality ? items[x].FaceCount : -1,
                     EyeCount = items[x].HasValidCachedQuality ? items[x].EyeCount : -1,
                     FaceScore = items[x].HasValidCachedQuality ? items[x].FaceScore : -1,
                     EyeScore = items[x].HasValidCachedQuality ? items[x].EyeScore : -1,
+                    FacePoseScore = items[x].HasValidCachedQuality ? items[x].FacePoseScore : -1,
+                    WorstFaceScore = items[x].HasValidCachedQuality ? items[x].WorstFaceScore : -1,
+                    EyeOpennessScore = items[x].HasValidCachedQuality ? items[x].EyeOpennessScore : -1,
+                    ClosedEyeCount = items[x].HasValidCachedQuality ? items[x].ClosedEyeCount : -1,
+                    BlinkPenalty = items[x].HasValidCachedQuality ? items[x].BlinkPenalty : 0,
                     QualityNotes = items[x].HasValidCachedQuality ? items[x].QualityNotes : ""
                 })
                 .OrderByDescending(x => x.SimilarityPercent)
@@ -347,6 +347,8 @@ public sealed class PerceptualHashAnalyzer
             {
                 var best = visualFiles
                     .OrderByDescending(x => x.QualityScore)
+                    .ThenBy(x => x.ClosedEyeCount > 0 ? x.ClosedEyeCount : 0)
+                    .ThenByDescending(x => x.FaceCount > 0 ? x.WorstFaceScore : -1)
                     .ThenByDescending(x => x.SharpnessScore)
                     .ThenByDescending(x => (long)x.Width * Math.Max(1, x.Height))
                     .ThenByDescending(x => x.FileSize)
@@ -379,7 +381,7 @@ public sealed class PerceptualHashAnalyzer
     private static double AspectRatio(PerceptualHashCandidate item)
     {
         if (item.Width <= 0 || item.Height <= 0) return 0;
-        return item.Orientation is 6 or 8
+        return ExifOrientationHelper.SwapsDimensions(item.Orientation)
             ? item.Height / (double)item.Width
             : item.Width / (double)item.Height;
     }

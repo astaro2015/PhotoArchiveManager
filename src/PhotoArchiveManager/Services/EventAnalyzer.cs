@@ -39,6 +39,7 @@ public sealed class EventAnalyzer
         try
         {
             var gpsCandidates = await _database.GetEventMetadataCandidatesAsync(ct);
+            LoggingService.Info($"Event analysis started: GPS cache candidates={gpsCandidates.Count:N0}, maxGap={maxGapMinutes} min, minPhotos={minPhotos}.");
             var processed = 0;
             var gpsRead = 0;
             var gpsCached = 0;
@@ -53,6 +54,12 @@ public sealed class EventAnalyzer
             }
             else
             {
+                // Reuse one SQLite connection for the whole GPS cache refresh. Opening a pooled
+                // connection per photo is still avoidable ADO.NET/PRAGMA work and is especially
+                // noticeable when upgrading an older catalog with many stale GPS cache rows.
+                await using var gpsConnection = _database.CreateConnection();
+                await gpsConnection.OpenAsync(ct);
+
                 foreach (var item in gpsCandidates)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -64,7 +71,7 @@ public sealed class EventAnalyzer
                         {
                             errors++;
                             await _database.UpdateGpsMetadataAsync(
-                                item.FileId, item.FileSize, item.LastWriteUtcTicks, null, null,
+                                gpsConnection, item.FileId, item.FileSize, item.LastWriteUtcTicks, null, null,
                                 "Файл отсутствует во время чтения GPS.", ct);
                         }
                         else
@@ -75,7 +82,7 @@ public sealed class EventAnalyzer
                                 gpsFound++;
                             if (!string.IsNullOrWhiteSpace(metadata.Error)) errors++;
                             await _database.UpdateGpsMetadataAsync(
-                                item.FileId, item.FileSize, item.LastWriteUtcTicks,
+                                gpsConnection, item.FileId, item.FileSize, item.LastWriteUtcTicks,
                                 metadata.GpsLatitude, metadata.GpsLongitude, metadata.Error, ct);
                         }
                     }
@@ -87,7 +94,7 @@ public sealed class EventAnalyzer
                         try
                         {
                             await _database.UpdateGpsMetadataAsync(
-                                item.FileId, item.FileSize, item.LastWriteUtcTicks, null, null, ex.Message, ct);
+                                gpsConnection, item.FileId, item.FileSize, item.LastWriteUtcTicks, null, null, ex.Message, ct);
                         }
                         catch { /* do not hide the original per-file failure */ }
                     }
@@ -107,7 +114,17 @@ public sealed class EventAnalyzer
                 "Группировка по времени / GPS / людям", 0, 0, gpsRead, gpsCached, gpsFound, errors, 0, ""));
 
             var candidates = await _database.GetEventCandidatesAsync(ct);
-            var drafts = BuildEventDrafts(candidates, maxGapMinutes, minPhotos, progress, gpsRead, gpsCached, gpsFound, errors, ct);
+            var eventGpsFound = candidates.Count(x => x.Latitude.HasValue && x.Longitude.HasValue);
+            LoggingService.Info($"Event analysis reliable-date candidates={candidates.Count:N0}, candidates with GPS={eventGpsFound:N0}, GPS read this run={gpsRead:N0}, GPS read errors={errors:N0}.");
+            if (candidates.Count == 0)
+            {
+                LoggingService.Warn(
+                    "Event analysis has zero reliable-date candidates. Automatic events require EXIF capture dates " +
+                    "or dates explicitly corrected by the user; Windows filesystem fallback dates are intentionally excluded.");
+            }
+
+            var drafts = BuildEventDrafts(candidates, maxGapMinutes, minPhotos, progress, gpsRead, gpsCached, eventGpsFound, errors, ct);
+            LoggingService.Info($"Event analysis drafts built={drafts.Count:N0}.");
 
             ct.ThrowIfCancellationRequested();
             var unreliable = await _database.CountPhotosWithoutReliableCaptureDateAsync(ct);
@@ -115,7 +132,7 @@ public sealed class EventAnalyzer
             var saved = await _database.ReplaceAutomaticEventsAsync(drafts, ct);
 
             progress?.Report(new EventAnalysisProgress(
-                "Готово", candidates.Count, candidates.Count, gpsRead, gpsCached, gpsFound, errors,
+                "Готово", candidates.Count, candidates.Count, gpsRead, gpsCached, eventGpsFound, errors,
                 saved.EventsCreated, ""));
 
             return new EventBuildResult(saved.EventsCreated, saved.PhotosAssigned, unreliable, manual);

@@ -1,4 +1,4 @@
-using PhotoArchiveManager.Infrastructure;
+﻿using PhotoArchiveManager.Infrastructure;
 using PhotoArchiveManager.Models;
 
 namespace PhotoArchiveManager.Services;
@@ -53,7 +53,7 @@ public sealed class ExactDuplicateAnalyzer
                     if (!File.Exists(candidate.FullPath))
                     {
                         errors++;
-                        await _database.UpdateHashAsync(connection, candidate.Id, "", 0, 0,
+                        await _database.UpdateHashAsync(connection, candidate.Id, "", candidate.FileSize, candidate.LastWriteUtcTicks,
                             "Файл отсутствует. Выполните повторное сканирование библиотеки.", ct);
                     }
                     else
@@ -62,7 +62,7 @@ public sealed class ExactDuplicateAnalyzer
                         if (info.Length != candidate.FileSize || info.LastWriteTimeUtc.Ticks != candidate.LastWriteUtcTicks)
                         {
                             errors++;
-                            await _database.UpdateHashAsync(connection, candidate.Id, "", 0, 0,
+                            await _database.UpdateHashAsync(connection, candidate.Id, "", candidate.FileSize, candidate.LastWriteUtcTicks,
                                 "Файл изменился после индексации. Выполните повторное сканирование библиотеки.", ct);
                         }
                         else if (!string.IsNullOrWhiteSpace(candidate.Sha256) &&
@@ -91,7 +91,7 @@ public sealed class ExactDuplicateAnalyzer
                     LoggingService.Error("Failed to hash: " + candidate.FullPath, ex);
                     try
                     {
-                        await _database.UpdateHashAsync(connection, candidate.Id, "", 0, 0, ex.Message, ct);
+                        await _database.UpdateHashAsync(connection, candidate.Id, "", candidate.FileSize, candidate.LastWriteUtcTicks, ex.Message, ct);
                     }
                     catch (Exception dbEx)
                     {
@@ -101,8 +101,13 @@ public sealed class ExactDuplicateAnalyzer
 
                 processed++;
                 processedBytes += candidate.FileSize;
-                progress?.Report(new ExactDuplicateProgress(stage, candidates.Count, processed, hashed, cached,
-                    errors, processedBytes, totalBytes, candidate.FullPath));
+                // Cached candidates can be traversed much faster than the WPF dispatcher can paint
+                // progress text. Do not enqueue thousands of redundant UI updates on a warm rerun.
+                if (stage != "SHA-256 (из кэша)" || processed % 20 == 0 || processed == candidates.Count)
+                {
+                    progress?.Report(new ExactDuplicateProgress(stage, candidates.Count, processed, hashed, cached,
+                        errors, processedBytes, totalBytes, candidate.FullPath));
+                }
             }
 
             progress?.Report(new ExactDuplicateProgress("Группировка точных дублей", candidates.Count, processed,

@@ -11,6 +11,7 @@ public sealed class FaceIndexCandidate
     public int Orientation { get; init; } = 1;
     public string? CaptureDate { get; init; }
     public int FaceIndexVersion { get; init; }
+    public int FaceIndexOrientationVersion { get; init; }
     public long FaceIndexFileSize { get; init; }
     public long FaceIndexLastWriteUtcTicks { get; init; }
     public string FaceIndexError { get; init; } = "";
@@ -18,9 +19,12 @@ public sealed class FaceIndexCandidate
 
     public bool HasCurrentFaceIndex =>
         FaceIndexVersion == PeopleAnalyzerAlgorithmVersion &&
+        FaceIndexOrientationVersion == CurrentOrientationVersion &&
         FaceIndexFileSize == FileSize &&
-        FaceIndexLastWriteUtcTicks == LastWriteUtcTicks;
+        FaceIndexLastWriteUtcTicks == LastWriteUtcTicks &&
+        string.IsNullOrWhiteSpace(FaceIndexError);
 
     // Kept here so cache validity is deterministic even when queried without the analyzer instance.
     public const int PeopleAnalyzerAlgorithmVersion = 2;
+    public const int CurrentOrientationVersion = 1;
 }

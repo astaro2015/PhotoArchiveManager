@@ -11,6 +11,21 @@ namespace PhotoArchiveManager.ViewModels;
 public sealed class MainViewModel : ObservableObject
 {
     private const int PageSize = 500;
+    private const string ReviewAll = "Все";
+    private const string ReviewNeeds = "Требуют разбора";
+    private const string ReviewUntrustedDate = "Нет надёжной даты";
+    private const string ReviewWithoutEvent = "Нет события";
+    private const string ReviewIndexError = "Ошибка индексации";
+    private const string SortDateDescending = "Дата ↓";
+    private const string SortDateAscending = "Дата ↑";
+    private const string SortFileName = "Имя";
+    private const string SortFullPath = "Путь";
+    private const string OrganizationLayoutYear = "Быстрая: только год";
+    private const string OrganizationLayoutYearMonth = "Быстрая: год → месяц";
+    private const string OrganizationLayoutYearMonthDay = "Быстрая: год → месяц → день";
+    private const string OrganizationLayoutFull = "Полная: год → месяц/событие";
+    private const string DuplicateViewGroups = "По группам файлов";
+    private const string DuplicateViewFolders = "По папкам";
     private readonly DatabaseService _database;
     private readonly LibraryScanner _scanner;
     private readonly ExactDuplicateAnalyzer _duplicateAnalyzer;
@@ -23,22 +38,15 @@ public sealed class MainViewModel : ObservableObject
     private readonly QuarantineService _quarantineService;
     private CancellationTokenSource? _scanCts;
 
-    private const string ReviewExactDuplicates = "ExactDuplicates";
-    private const string ReviewVisualDuplicates = "VisualDuplicates";
-    private const string ReviewBursts = "Bursts";
-    private const string ReviewPeople = "People";
-    private const string ReviewEvents = "Events";
-    private HashSet<string> _reviewedExactDuplicates = new(StringComparer.Ordinal);
-    private HashSet<string> _reviewedVisualDuplicates = new(StringComparer.Ordinal);
-    private HashSet<string> _reviewedBursts = new(StringComparer.Ordinal);
-    private HashSet<string> _reviewedPeople = new(StringComparer.Ordinal);
-    private HashSet<string> _reviewedEvents = new(StringComparer.Ordinal);
 
     public ObservableCollection<SourceFolderItem> Sources { get; } = new();
     public ObservableCollection<PhotoItem> Photos { get; } = new();
     public ObservableCollection<string> Years { get; } = new();
     public ObservableCollection<string> Cameras { get; } = new();
     public ObservableCollection<DuplicateGroupItem> DuplicateGroups { get; } = new();
+    public ObservableCollection<DuplicateFolderItem> DuplicateFolderGroups { get; } = new();
+    public ObservableCollection<DuplicateFolderIntersectionItem> DuplicateFolderIntersections { get; } = new();
+    public ObservableCollection<DuplicateFolderPairItem> DuplicateFolderPairRows { get; } = new();
     public ObservableCollection<VisualDuplicateGroupItem> VisualDuplicateGroups { get; } = new();
     public ObservableCollection<BurstGroupItem> BurstGroups { get; } = new();
     public ObservableCollection<PersonGroupItem> PersonGroups { get; } = new();
@@ -51,6 +59,7 @@ public sealed class MainViewModel : ObservableObject
     public ObservableCollection<OrganizationPlanItem> OrganizationPlan { get; } = new();
     public ObservableCollection<OrganizationActionItem> OrganizationMoves { get; } = new();
     public ObservableCollection<QuarantineActionItem> QuarantineActions { get; } = new();
+    public IReadOnlyList<string> DuplicateViewModeOptions { get; } = new[] { DuplicateViewGroups, DuplicateViewFolders };
     public IReadOnlyList<int> VisualThresholdOptions { get; } = new[] { 2, 3, 4, 5, 6, 7 };
     public IReadOnlyList<int> BurstGapOptions { get; } = new[] { 5, 10, 15, 30, 60 };
     public IReadOnlyList<int> BurstMinSizeOptions { get; } = new[] { 3, 4, 5, 8 };
@@ -59,7 +68,18 @@ public sealed class MainViewModel : ObservableObject
     public IReadOnlyList<int> PeopleMinGroupSizeOptions { get; } = new[] { 2, 3, 4, 5, 8 };
     public IReadOnlyList<int> EventGapOptions { get; } = new[] { 30, 60, 90, 120, 180, 240 };
     public IReadOnlyList<int> EventMinSizeOptions { get; } = new[] { 2, 3, 4, 5, 8 };
-    public IReadOnlyList<int> RatingFilterOptions { get; } = new[] { 0, 1, 2, 3, 4, 5 };
+    public IReadOnlyList<string> ReviewFilterOptions { get; } = new[]
+    {
+        ReviewAll, ReviewNeeds, ReviewUntrustedDate, ReviewWithoutEvent, ReviewIndexError
+    };
+    public IReadOnlyList<string> PhotoSortOptions { get; } = new[]
+    {
+        SortDateDescending, SortDateAscending, SortFileName, SortFullPath
+    };
+    public IReadOnlyList<string> OrganizationLayoutOptions { get; } = new[]
+    {
+        OrganizationLayoutYear, OrganizationLayoutYearMonth, OrganizationLayoutYearMonthDay, OrganizationLayoutFull
+    };
 
     private SourceFolderItem? _selectedSource;
     public SourceFolderItem? SelectedSource
@@ -90,10 +110,7 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (SetProperty(ref _selectedPhoto, value))
-            {
                 RaiseViewerCommands();
-                ToggleFavoriteCommand?.RaiseCanExecuteChanged();
-            }
         }
     }
 
@@ -106,7 +123,7 @@ public sealed class MainViewModel : ObservableObject
             if (SetProperty(ref _selectedDuplicateGroup, value))
             {
                 SelectedDuplicateFile = value?.Files.FirstOrDefault();
-                NotifyDuplicateReviewChanged();
+                QuarantineOtherCopiesCommand?.RaiseCanExecuteChanged();
             }
         }
     }
@@ -122,6 +139,195 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    private string _selectedDuplicateViewMode = DuplicateViewGroups;
+    public string SelectedDuplicateViewMode
+    {
+        get => _selectedDuplicateViewMode;
+        set
+        {
+            if (SetProperty(ref _selectedDuplicateViewMode, value))
+            {
+                OnPropertyChanged(nameof(IsDuplicateGroupView));
+                OnPropertyChanged(nameof(IsDuplicateFolderView));
+            }
+        }
+    }
+
+    public bool IsDuplicateGroupView => !string.Equals(SelectedDuplicateViewMode, DuplicateViewFolders, StringComparison.Ordinal);
+    public bool IsDuplicateFolderView => string.Equals(SelectedDuplicateViewMode, DuplicateViewFolders, StringComparison.Ordinal);
+
+    private bool _deleteExactDuplicatesDirectly;
+    public bool DeleteExactDuplicatesDirectly
+    {
+        get => _deleteExactDuplicatesDirectly;
+        set
+        {
+            if (!SetProperty(ref _deleteExactDuplicatesDirectly, value)) return;
+            OnPropertyChanged(nameof(DuplicateOtherCopiesActionText));
+            OnPropertyChanged(nameof(DuplicatePairActionText));
+            OnPropertyChanged(nameof(ExactDuplicateRemovalModeText));
+            OnPropertyChanged(nameof(ExactDuplicateGroupSafetyText));
+            StatusText = value
+                ? "ВНИМАНИЕ: для точных дублей включено прямое безвозвратное удаление. Карантин и Undo использоваться не будут."
+                : "Для точных дублей включён безопасный режим карантина с Undo.";
+        }
+    }
+
+    public string DuplicateOtherCopiesActionText => DeleteExactDuplicatesDirectly
+        ? "Оставить этот · остальные УДАЛИТЬ"
+        : "Оставить этот · остальные в карантин";
+    public string DuplicatePairActionText
+    {
+        get
+        {
+            var side = RemoveDuplicatePairFromLeft ? "A" : "B";
+            return DeleteExactDuplicatesDirectly
+                ? $"Удалить дубли из выбранной стороны {side}"
+                : $"В карантин дубли из выбранной стороны {side}";
+        }
+    }
+    public string ExactDuplicateRemovalModeText => DeleteExactDuplicatesDirectly
+        ? "ОПАСНЫЙ РЕЖИМ: файлы удаляются напрямую и без Undo."
+        : "Безопасный режим: файлы перемещаются в карантин и могут быть возвращены через Undo.";
+    public string ExactDuplicateGroupSafetyText => DeleteExactDuplicatesDirectly
+        ? "Перед удалением PAM повторно проверяет SHA-256 сохраняемой и удаляемых копий. Удаление безвозвратное: карантин и Undo отключены."
+        : "SHA-256 повторно проверяется перед карантином. Перенос обратим через Undo.";
+    private DuplicateFolderIntersectionItem? _selectedDuplicateFolderIntersection;
+    public DuplicateFolderIntersectionItem? SelectedDuplicateFolderIntersection
+    {
+        get => _selectedDuplicateFolderIntersection;
+        set
+        {
+            if (!SetProperty(ref _selectedDuplicateFolderIntersection, value)) return;
+
+            var left = value is null
+                ? null
+                : DuplicateFolderGroups.FirstOrDefault(x =>
+                    string.Equals(x.FolderPath, value.FolderAPath, StringComparison.OrdinalIgnoreCase));
+            SelectedDuplicateFolder = left;
+
+            var match = left?.Matches.FirstOrDefault(x =>
+                string.Equals(x.OtherFolderPath, value?.FolderBPath, StringComparison.OrdinalIgnoreCase));
+            SelectedDuplicateFolderMatch = match;
+
+            RemoveDuplicatePairFromLeft = true;
+            OnPropertyChanged(nameof(SelectedDuplicateFolderRight));
+            OnPropertyChanged(nameof(DuplicatePairSummaryText));
+            OnPropertyChanged(nameof(DuplicatePairSelectionText));
+            ShowDuplicateFolderInExplorerCommand?.RaiseCanExecuteChanged();
+            ShowDuplicateFolderMatchInExplorerCommand?.RaiseCanExecuteChanged();
+            QuarantineDuplicateFolderPairSideCommand?.RaiseCanExecuteChanged();
+        }
+    }
+
+    private DuplicateFolderItem? _selectedDuplicateFolder;
+    public DuplicateFolderItem? SelectedDuplicateFolder
+    {
+        get => _selectedDuplicateFolder;
+        set
+        {
+            if (SetProperty(ref _selectedDuplicateFolder, value))
+            {
+                OnPropertyChanged(nameof(SelectedDuplicateFolderRight));
+                RebuildDuplicateFolderPairRows();
+                ShowDuplicateFolderInExplorerCommand?.RaiseCanExecuteChanged();
+                QuarantineDuplicateFolderPairSideCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    private DuplicateFolderMatchItem? _selectedDuplicateFolderMatch;
+    public DuplicateFolderMatchItem? SelectedDuplicateFolderMatch
+    {
+        get => _selectedDuplicateFolderMatch;
+        set
+        {
+            if (SetProperty(ref _selectedDuplicateFolderMatch, value))
+            {
+                RebuildDuplicateFolderPairRows();
+                ShowDuplicateFolderMatchInExplorerCommand?.RaiseCanExecuteChanged();
+                QuarantineDuplicateFolderPairSideCommand?.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public DuplicateFolderItem? SelectedDuplicateFolderRight
+    {
+        get
+        {
+            var path = SelectedDuplicateFolderIntersection?.FolderBPath;
+            return string.IsNullOrWhiteSpace(path)
+                ? null
+                : DuplicateFolderGroups.FirstOrDefault(x =>
+                    string.Equals(x.FolderPath, path, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    private bool _showOnlyCompleteDuplicateFolderPairs;
+    public bool ShowOnlyCompleteDuplicateFolderPairs
+    {
+        get => _showOnlyCompleteDuplicateFolderPairs;
+        set
+        {
+            if (SetProperty(ref _showOnlyCompleteDuplicateFolderPairs, value))
+                RebuildDuplicateFolderIntersections();
+        }
+    }
+
+    private bool _removeDuplicatePairFromLeft = true;
+    public bool RemoveDuplicatePairFromLeft
+    {
+        get => _removeDuplicatePairFromLeft;
+        set
+        {
+            if (SetProperty(ref _removeDuplicatePairFromLeft, value))
+            {
+                OnPropertyChanged(nameof(RemoveDuplicatePairFromRight));
+                OnPropertyChanged(nameof(DuplicatePairSelectionText));
+                OnPropertyChanged(nameof(DuplicatePairActionText));
+            }
+        }
+    }
+
+    public bool RemoveDuplicatePairFromRight
+    {
+        get => !RemoveDuplicatePairFromLeft;
+        set
+        {
+            if (value) RemoveDuplicatePairFromLeft = false;
+        }
+    }
+
+    public string DuplicatePairSummaryText
+    {
+        get
+        {
+            var pair = SelectedDuplicateFolderIntersection;
+            if (pair is null)
+                return "Выберите слева пересечение — справа появятся папки A и B, а ниже их точные совпадения.";
+
+            return $"Пара №{pair.DisplayNumber:N0}: {pair.SharedSetCount:N0} одинаковых SHA-256 · " +
+                   $"A: {pair.ACopyCount:N0} ({ByteFormatter.Format(pair.ABytes)}) · " +
+                   $"B: {pair.BCopyCount:N0} ({ByteFormatter.Format(pair.BBytes)})";
+        }
+    }
+
+    public string DuplicatePairSelectionText
+    {
+        get
+        {
+            if (DuplicateFolderPairRows.Count == 0) return "Нет выбранной пары папок.";
+            var count = RemoveDuplicatePairFromLeft
+                ? DuplicateFolderPairRows.Sum(x => x.LeftCopyCount)
+                : DuplicateFolderPairRows.Sum(x => x.RightCopyCount);
+            var bytes = RemoveDuplicatePairFromLeft
+                ? DuplicateFolderPairRows.Sum(x => x.LeftBytes)
+                : DuplicateFolderPairRows.Sum(x => x.RightBytes);
+            var side = RemoveDuplicatePairFromLeft ? "A" : "B";
+            return $"Выбрана сторона {side}: будет убрано {count:N0} файлов · {ByteFormatter.Format(bytes)} только из этой пары.";
+        }
+    }
+
     private VisualDuplicateGroupItem? _selectedVisualDuplicateGroup;
     public VisualDuplicateGroupItem? SelectedVisualDuplicateGroup
     {
@@ -132,7 +338,6 @@ public sealed class MainViewModel : ObservableObject
             {
                 SelectedVisualDuplicateFile = value?.Files.FirstOrDefault();
                 RaiseVisualCommands();
-                NotifyVisualReviewChanged();
             }
         }
     }
@@ -159,7 +364,6 @@ public sealed class MainViewModel : ObservableObject
                 if (value is not null) value.ApplyRecommendations(SelectedBurstKeepCount);
                 SelectedBurstFile = value?.Files.FirstOrDefault();
                 RaiseBurstCommands();
-                NotifyBurstReviewChanged();
             }
         }
     }
@@ -175,6 +379,8 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    private readonly HashSet<long> _selectedPersonGroupIds = new();
+    private long? _preferredPersonMergeTargetId;
     private PersonGroupItem? _selectedPersonGroup;
     public PersonGroupItem? SelectedPersonGroup
     {
@@ -185,10 +391,108 @@ public sealed class MainViewModel : ObservableObject
             {
                 _ = LoadSelectedPersonFacesAsync();
                 RaisePeopleCommands();
-                NotifyPeopleReviewChanged();
+                NotifyPersonSelectionChanged();
             }
         }
     }
+
+    public void UpdateSelectedPersonGroups(IEnumerable<PersonGroupItem> groups)
+    {
+        _selectedPersonGroupIds.Clear();
+        foreach (var group in groups)
+            _selectedPersonGroupIds.Add(group.Id);
+
+        if (_preferredPersonMergeTargetId.HasValue && !_selectedPersonGroupIds.Contains(_preferredPersonMergeTargetId.Value))
+            _preferredPersonMergeTargetId = null;
+
+        NotifyPersonSelectionChanged();
+        RaisePeopleCommands();
+    }
+
+    public void SetPreferredPersonMergeTarget(PersonGroupItem? group)
+    {
+        _preferredPersonMergeTargetId = group is { Id: > 0 } ? group.Id : null;
+    }
+
+    private PersonGroupItem? GetPreferredPersonMergeTarget(IReadOnlyList<PersonGroupItem> candidates)
+    {
+        if (_preferredPersonMergeTargetId.HasValue)
+        {
+            var preferred = candidates.FirstOrDefault(x => x.Id == _preferredPersonMergeTargetId.Value);
+            if (preferred is not null) return preferred;
+        }
+
+        if (SelectedPersonGroup is { Id: > 0 } current)
+        {
+            var selected = candidates.FirstOrDefault(x => x.Id == current.Id);
+            if (selected is not null) return selected;
+        }
+
+        // If there is no explicit context target, a manually named group is a safer default
+        // keeper than an anonymous auto-group because its meaningful name should normally survive.
+        return candidates.FirstOrDefault(x => x.IsNamed) ?? candidates.FirstOrDefault();
+    }
+
+    private List<PersonGroupItem> GetSelectedPersonGroups()
+    {
+        var selected = PersonGroups.Where(x => _selectedPersonGroupIds.Contains(x.Id)).ToList();
+        if (selected.Count == 0 && SelectedPersonGroup is not null)
+            selected.Add(SelectedPersonGroup);
+        return selected;
+    }
+
+    private int SelectedRealPersonGroupCount => GetSelectedPersonGroups().Count(x => x.Id > 0);
+    private bool HasMultipleSelectedPersonGroups => GetSelectedPersonGroups().Count > 1;
+
+    public string PersonSelectionSummaryText
+    {
+        get
+        {
+            var selected = GetSelectedPersonGroups();
+            if (selected.Count == 0) return "Ничего не выбрано.";
+            if (selected.Count == 1)
+                return $"Выбрано: {selected[0].DisplayName} · лиц: {selected[0].FaceCount:N0}.";
+            var real = selected.Count(x => x.Id > 0);
+            var ungrouped = selected.Any(x => x.Id == 0);
+            var kind = ungrouped ? $"{real:N0} групп + «Без группы»" : $"{real:N0} групп";
+            var note = ungrouped ? " «Без группы» можно исключить, но её нельзя объединить или расформировать." : "";
+            return $"Выбрано: {selected.Count:N0} элементов ({kind}) · лиц: {selected.Sum(x => x.FaceCount):N0}. Групповые действия применяются ко всему выделению.{note}";
+        }
+    }
+
+    public string MergePersonActionText => SelectedRealPersonGroupCount >= 2
+        ? $"Объединить выбранные группы ({SelectedRealPersonGroupCount:N0})…"
+        : "Объединить эту группу с другой…";
+    public string DeletePersonActionText => GetSelectedPersonGroups().Count >= 2 && SelectedRealPersonGroupCount > 0
+        ? $"Расформировать выбранные группы ({SelectedRealPersonGroupCount:N0})…"
+        : "Расформировать группу (лица → «Без группы»)…";
+    public string IgnorePersonActionText => GetSelectedPersonGroups().Count >= 2
+        ? $"Исключить выбранные элементы ({GetSelectedPersonGroups().Count:N0}) из раздела «Люди»…"
+        : "Исключить лица группы из раздела «Люди»…";
+
+    private void NotifyPersonSelectionChanged()
+    {
+        OnPropertyChanged(nameof(PersonSelectionSummaryText));
+        OnPropertyChanged(nameof(MergePersonActionText));
+        OnPropertyChanged(nameof(DeletePersonActionText));
+        OnPropertyChanged(nameof(IgnorePersonActionText));
+    }
+
+    private bool HasSingleSelectedRealPersonGroup()
+    {
+        var selected = GetSelectedPersonGroups();
+        return selected.Count == 1 && selected[0].Id > 0;
+    }
+
+    private bool CanMergeCurrentPersonSelection()
+    {
+        var selected = GetSelectedPersonGroups();
+        if (selected.Count >= 2) return selected.Count(x => x.Id > 0) >= 2;
+        return selected.Count == 1 && selected[0].Id > 0 && PersonGroups.Any(x => x.Id > 0 && x.Id != selected[0].Id);
+    }
+
+    private bool CanDeleteCurrentPersonSelection() => GetSelectedPersonGroups().Any(x => x.Id > 0);
+    private bool CanIgnoreCurrentPersonSelection() => GetSelectedPersonGroups().Any(x => x.FaceCount > 0);
 
     private FaceItem? _selectedPersonFace;
     public FaceItem? SelectedPersonFace
@@ -211,7 +515,6 @@ public sealed class MainViewModel : ObservableObject
             {
                 _ = LoadSelectedEventPhotosAsync();
                 RaiseEventCommands();
-                NotifyEventReviewChanged();
             }
         }
     }
@@ -254,17 +557,6 @@ public sealed class MainViewModel : ObservableObject
         ? "Выберите месяц слева."
         : $"{SelectedTimelineMonth.DisplayName} · хронология по дате каталога";
 
-    public string DuplicateReviewStatusText => BuildReviewStatus(DuplicateGroups.Count, SelectedDuplicateGroup is null ? -1 : DuplicateGroups.IndexOf(SelectedDuplicateGroup), SelectedDuplicateGroup is not null && _reviewedExactDuplicates.Contains(SelectedDuplicateGroup.Sha256));
-    public string DuplicateReviewActionText => SelectedDuplicateGroup is not null && _reviewedExactDuplicates.Contains(SelectedDuplicateGroup.Sha256) ? "Снять «обработано»" : "Обработано";
-    public string VisualReviewStatusText => BuildReviewStatus(VisualDuplicateGroups.Count, SelectedVisualDuplicateGroup is null ? -1 : VisualDuplicateGroups.IndexOf(SelectedVisualDuplicateGroup), SelectedVisualDuplicateGroup is not null && _reviewedVisualDuplicates.Contains(SelectedVisualDuplicateGroup.GroupKey));
-    public string VisualReviewActionText => SelectedVisualDuplicateGroup is not null && _reviewedVisualDuplicates.Contains(SelectedVisualDuplicateGroup.GroupKey) ? "Снять «обработано»" : "Обработано";
-    public string BurstReviewStatusText => BuildReviewStatus(BurstGroups.Count, SelectedBurstGroup is null ? -1 : BurstGroups.IndexOf(SelectedBurstGroup), SelectedBurstGroup is not null && _reviewedBursts.Contains(SelectedBurstGroup.GroupKey));
-    public string BurstReviewActionText => SelectedBurstGroup is not null && _reviewedBursts.Contains(SelectedBurstGroup.GroupKey) ? "Снять «обработано»" : "Обработано";
-    public string PeopleReviewStatusText => BuildReviewStatus(PersonGroups.Count, SelectedPersonGroup is null ? -1 : PersonGroups.IndexOf(SelectedPersonGroup), SelectedPersonGroup is not null && _reviewedPeople.Contains(SelectedPersonGroup.Id.ToString()));
-    public string PeopleReviewActionText => SelectedPersonGroup is not null && _reviewedPeople.Contains(SelectedPersonGroup.Id.ToString()) ? "Снять «обработано»" : "Обработано";
-    public string EventReviewStatusText => BuildReviewStatus(EventGroups.Count, SelectedEventGroup is null ? -1 : EventGroups.IndexOf(SelectedEventGroup), SelectedEventGroup is not null && _reviewedEvents.Contains(SelectedEventGroup.Id.ToString()));
-    public string EventReviewActionText => SelectedEventGroup is not null && _reviewedEvents.Contains(SelectedEventGroup.Id.ToString()) ? "Снять «обработано»" : "Обработано";
-
     private FaceIgnoreActionItem? _latestFaceIgnoreAction;
     public FaceIgnoreActionItem? LatestFaceIgnoreAction
     {
@@ -278,7 +570,7 @@ public sealed class MainViewModel : ObservableObject
             }
         }
     }
-    public string FaceIgnoreUndoText => LatestFaceIgnoreAction?.DisplayText ?? "Нет игнорирований для восстановления";
+    public string FaceIgnoreUndoText => LatestFaceIgnoreAction?.DisplayText ?? "Нет исключений для восстановления";
 
     private QuarantineActionItem? _selectedQuarantineAction;
     public QuarantineActionItem? SelectedQuarantineAction
@@ -300,11 +592,11 @@ public sealed class MainViewModel : ObservableObject
     private string _selectedCamera = "Все";
     public string SelectedCamera { get => _selectedCamera; set => SetProperty(ref _selectedCamera, value); }
 
-    private bool _showFavoritesOnly;
-    public bool ShowFavoritesOnly { get => _showFavoritesOnly; set => SetProperty(ref _showFavoritesOnly, value); }
+    private string _selectedReviewFilter = ReviewAll;
+    public string SelectedReviewFilter { get => _selectedReviewFilter; set => SetProperty(ref _selectedReviewFilter, value); }
 
-    private int _selectedMinRating;
-    public int SelectedMinRating { get => _selectedMinRating; set => SetProperty(ref _selectedMinRating, Math.Clamp(value, 0, 5)); }
+    private string _selectedPhotoSort = SortDateDescending;
+    public string SelectedPhotoSort { get => _selectedPhotoSort; set => SetProperty(ref _selectedPhotoSort, value); }
 
     private string _statusText = "Готово.";
     public string StatusText { get => _statusText; set => SetProperty(ref _statusText, value); }
@@ -408,6 +700,40 @@ public sealed class MainViewModel : ObservableObject
     private int _selectedEventMinSize = 2;
     public int SelectedEventMinSize { get => _selectedEventMinSize; set => SetProperty(ref _selectedEventMinSize, Math.Clamp(value, 2, 50)); }
 
+    private string _selectedOrganizationLayout = OrganizationLayoutYear;
+    public string SelectedOrganizationLayout
+    {
+        get => _selectedOrganizationLayout;
+        set
+        {
+            var normalized = OrganizationLayoutOptions.Contains(value) ? value : OrganizationLayoutYear;
+            if (SetProperty(ref _selectedOrganizationLayout, normalized))
+            {
+                OnPropertyChanged(nameof(OrganizationIsFullLayout));
+                OnPropertyChanged(nameof(OrganizationLayoutDescription));
+                InvalidateOrganizationPlan("Режим раскладки изменён — постройте preview заново.");
+            }
+        }
+    }
+
+    public bool OrganizationIsFullLayout => SelectedOrganizationLayout == OrganizationLayoutFull;
+
+    public string OrganizationLayoutDescription => SelectedOrganizationLayout switch
+    {
+        OrganizationLayoutYear => @"Быстрая раскладка: 2024\фото.jpg. Только папки по годам; исходные имена файлов сохраняются.",
+        OrganizationLayoutYearMonth => @"Быстрая раскладка: 2024\08 — август\фото.jpg. Месяцы имеют числовой префикс и сортируются по календарю.",
+        OrganizationLayoutYearMonthDay => @"Быстрая раскладка: 2024\08 — август\18\фото.jpg. Подходит для очень больших ежедневных архивов.",
+        _ => "Полная организация: год → месяц/событие. Здесь можно добавлять дату и имена людей в имя файла."
+    };
+
+    private OrganizationLayoutMode SelectedOrganizationLayoutMode => SelectedOrganizationLayout switch
+    {
+        OrganizationLayoutYearMonth => OrganizationLayoutMode.YearMonth,
+        OrganizationLayoutYearMonthDay => OrganizationLayoutMode.YearMonthDay,
+        OrganizationLayoutFull => OrganizationLayoutMode.Full,
+        _ => OrganizationLayoutMode.Year
+    };
+
     private string _organizationDestinationRoot = "";
     public string OrganizationDestinationRoot
     {
@@ -455,7 +781,7 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private string _organizationSummaryText = "Выберите папку назначения и постройте Preview. Папки: год → месяц/событие; имя файла: дата + исходное имя + именованные люди. На этапе Preview файлы не меняются.";
+    private string _organizationSummaryText = "Выберите папку назначения и режим раскладки, затем постройте Preview. Быстрые режимы сохраняют исходные имена; полная организация умеет учитывать события и именованных людей.";
     public string OrganizationSummaryText { get => _organizationSummaryText; set => SetProperty(ref _organizationSummaryText, value); }
 
     private string _organizationProgressText = "";
@@ -524,6 +850,7 @@ public sealed class MainViewModel : ObservableObject
                 RaiseOrganizationCommands();
                 RaiseQuarantineCommands();
                 OnPropertyChanged(nameof(CanManageSelectedSource));
+                OnPropertyChanged(nameof(CanPerformCatalogReview));
             }
         }
     }
@@ -545,6 +872,7 @@ public sealed class MainViewModel : ObservableObject
                 RaiseOrganizationCommands();
                 RaiseQuarantineCommands();
                 OnPropertyChanged(nameof(CanManageSelectedSource));
+                OnPropertyChanged(nameof(CanPerformCatalogReview));
             }
         }
     }
@@ -566,6 +894,7 @@ public sealed class MainViewModel : ObservableObject
                 RaiseOrganizationCommands();
                 RaiseQuarantineCommands();
                 OnPropertyChanged(nameof(CanManageSelectedSource));
+                OnPropertyChanged(nameof(CanPerformCatalogReview));
             }
         }
     }
@@ -587,6 +916,7 @@ public sealed class MainViewModel : ObservableObject
                 RaiseOrganizationCommands();
                 RaiseQuarantineCommands();
                 OnPropertyChanged(nameof(CanManageSelectedSource));
+                OnPropertyChanged(nameof(CanPerformCatalogReview));
             }
         }
     }
@@ -608,6 +938,7 @@ public sealed class MainViewModel : ObservableObject
                 RaiseOrganizationCommands();
                 RaiseQuarantineCommands();
                 OnPropertyChanged(nameof(CanManageSelectedSource));
+                OnPropertyChanged(nameof(CanPerformCatalogReview));
             }
         }
     }
@@ -629,6 +960,7 @@ public sealed class MainViewModel : ObservableObject
                 RaiseOrganizationCommands();
                 RaiseQuarantineCommands();
                 OnPropertyChanged(nameof(CanManageSelectedSource));
+                OnPropertyChanged(nameof(CanPerformCatalogReview));
             }
         }
     }
@@ -650,6 +982,7 @@ public sealed class MainViewModel : ObservableObject
                 RaiseOrganizationCommands();
                 RaiseQuarantineCommands();
                 OnPropertyChanged(nameof(CanManageSelectedSource));
+                OnPropertyChanged(nameof(CanPerformCatalogReview));
             }
         }
     }
@@ -672,6 +1005,7 @@ public sealed class MainViewModel : ObservableObject
                 RaiseOrganizationCommands();
                 RaiseQuarantineCommands();
                 OnPropertyChanged(nameof(CanManageSelectedSource));
+                OnPropertyChanged(nameof(CanPerformCatalogReview));
             }
         }
     }
@@ -688,7 +1022,6 @@ public sealed class MainViewModel : ObservableObject
     public AsyncRelayCommand LoadMoreCommand { get; }
     public RelayCommand ShowInExplorerCommand { get; }
     public RelayCommand OpenPhotoCommand { get; }
-    public AsyncRelayCommand ToggleFavoriteCommand { get; }
     public AsyncRelayCommand EditPhotoCaptureDateCommand { get; }
     public AsyncRelayCommand ResetPhotoCaptureDateCommand { get; }
 
@@ -700,9 +1033,9 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand ShowDuplicateInExplorerCommand { get; }
     public RelayCommand OpenDuplicateFileCommand { get; }
     public AsyncRelayCommand QuarantineOtherCopiesCommand { get; }
-    public RelayCommand PreviousDuplicateGroupCommand { get; }
-    public RelayCommand NextDuplicateGroupCommand { get; }
-    public AsyncRelayCommand ToggleDuplicateReviewedCommand { get; }
+    public RelayCommand ShowDuplicateFolderInExplorerCommand { get; }
+    public RelayCommand ShowDuplicateFolderMatchInExplorerCommand { get; }
+    public AsyncRelayCommand QuarantineDuplicateFolderPairSideCommand { get; }
 
     public AsyncRelayCommand FindVisualDuplicatesCommand { get; }
     public AsyncRelayCommand RefreshVisualDuplicatesCommand { get; }
@@ -715,12 +1048,8 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand PauseQualityAnalysisCommand { get; }
     public RelayCommand ResumeQualityAnalysisCommand { get; }
     public RelayCommand StopQualityAnalysisCommand { get; }
-    public RelayCommand SetVisualKeeperCommand { get; }
     public RelayCommand ClearVisualReviewCommand { get; }
     public AsyncRelayCommand QuarantineMarkedVisualCommand { get; }
-    public RelayCommand PreviousVisualGroupCommand { get; }
-    public RelayCommand NextVisualGroupCommand { get; }
-    public AsyncRelayCommand ToggleVisualReviewedCommand { get; }
 
     public AsyncRelayCommand FindBurstsCommand { get; }
     public AsyncRelayCommand RefreshBurstsCommand { get; }
@@ -734,9 +1063,6 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand MarkBurstOthersCommand { get; }
     public RelayCommand ClearBurstReviewCommand { get; }
     public AsyncRelayCommand QuarantineMarkedBurstCommand { get; }
-    public RelayCommand PreviousBurstGroupCommand { get; }
-    public RelayCommand NextBurstGroupCommand { get; }
-    public AsyncRelayCommand ToggleBurstReviewedCommand { get; }
 
     public AsyncRelayCommand AnalyzePeopleCommand { get; }
     public RelayCommand PausePeopleAnalysisCommand { get; }
@@ -752,9 +1078,6 @@ public sealed class MainViewModel : ObservableObject
     public AsyncRelayCommand IgnoreFaceCommand { get; }
     public AsyncRelayCommand IgnorePersonGroupCommand { get; }
     public AsyncRelayCommand UndoLastFaceIgnoreCommand { get; }
-    public RelayCommand PreviousPersonGroupCommand { get; }
-    public RelayCommand NextPersonGroupCommand { get; }
-    public AsyncRelayCommand TogglePersonReviewedCommand { get; }
     public AsyncRelayCommand ShowPersonPhotosCommand { get; }
     public RelayCommand ShowPersonFaceInExplorerCommand { get; }
     public RelayCommand OpenPersonPhotoCommand { get; }
@@ -770,9 +1093,6 @@ public sealed class MainViewModel : ObservableObject
     public AsyncRelayCommand ShowEventPhotosCommand { get; }
     public RelayCommand ShowEventPhotoInExplorerCommand { get; }
     public RelayCommand OpenEventPhotoCommand { get; }
-    public RelayCommand PreviousEventGroupCommand { get; }
-    public RelayCommand NextEventGroupCommand { get; }
-    public AsyncRelayCommand ToggleEventReviewedCommand { get; }
     public AsyncRelayCommand SetEventCoverCommand { get; }
     public AsyncRelayCommand EditEventNotesCommand { get; }
     public AsyncRelayCommand SplitEventCommand { get; }
@@ -833,8 +1153,6 @@ public sealed class MainViewModel : ObservableObject
             () => SelectedPhoto is not null && File.Exists(SelectedPhoto.FullPath));
         OpenPhotoCommand = new RelayCommand(OpenPhoto,
             () => SelectedPhoto is not null && File.Exists(SelectedPhoto.FullPath));
-        ToggleFavoriteCommand = new AsyncRelayCommand(ToggleSelectedFavoriteAsync,
-            () => CanPerformCatalogReview && SelectedPhoto is not null);
         EditPhotoCaptureDateCommand = new AsyncRelayCommand(EditSelectedPhotoCaptureDateAsync, CanEditSelectedPhotoDate);
         ResetPhotoCaptureDateCommand = new AsyncRelayCommand(ResetSelectedPhotoCaptureDateAsync,
             () => CanEditSelectedPhotoDate() && SelectedPhoto?.IsManualCaptureDate == true);
@@ -862,9 +1180,12 @@ public sealed class MainViewModel : ObservableObject
         QuarantineOtherCopiesCommand = new AsyncRelayCommand(QuarantineOtherCopiesAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
                   SelectedDuplicateGroup is not null && SelectedDuplicateGroup.Files.Count > 1 && SelectedDuplicateFile is not null);
-        PreviousDuplicateGroupCommand = new RelayCommand(() => MoveDuplicateReview(-1), () => CanMoveReview(DuplicateGroups.Count, SelectedDuplicateGroup is null ? -1 : DuplicateGroups.IndexOf(SelectedDuplicateGroup)));
-        NextDuplicateGroupCommand = new RelayCommand(() => MoveDuplicateReview(1), () => CanMoveReview(DuplicateGroups.Count, SelectedDuplicateGroup is null ? -1 : DuplicateGroups.IndexOf(SelectedDuplicateGroup)));
-        ToggleDuplicateReviewedCommand = new AsyncRelayCommand(ToggleDuplicateReviewedAsync, () => CanPerformCatalogReview && SelectedDuplicateGroup is not null);
+        ShowDuplicateFolderInExplorerCommand = new RelayCommand(ShowSelectedDuplicateFolderInExplorer,
+            () => SelectedDuplicateFolderIntersection is not null && Directory.Exists(SelectedDuplicateFolderIntersection.FolderAPath));
+        ShowDuplicateFolderMatchInExplorerCommand = new RelayCommand(ShowSelectedDuplicateFolderMatchInExplorer,
+            () => SelectedDuplicateFolderIntersection is not null && Directory.Exists(SelectedDuplicateFolderIntersection.FolderBPath));
+        QuarantineDuplicateFolderPairSideCommand = new AsyncRelayCommand(QuarantineSelectedDuplicateFolderPairSideAsync,
+            () => CanPerformCatalogReview && SelectedDuplicateFolderIntersection is not null && DuplicateFolderPairRows.Count > 0);
 
         FindVisualDuplicatesCommand = new AsyncRelayCommand(FindVisualDuplicatesAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning);
@@ -904,18 +1225,12 @@ public sealed class MainViewModel : ObservableObject
             RaiseVisualCommands();
         }, () => IsQualityAnalysisRunning && _qualityAnalyzer.IsPaused);
         StopQualityAnalysisCommand = new RelayCommand(() => _qualityAnalyzer.Stop(), () => IsQualityAnalysisRunning);
-        SetVisualKeeperCommand = new RelayCommand(SetVisualKeeper,
-            () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
-                  SelectedVisualDuplicateGroup is not null && SelectedVisualDuplicateFile is not null);
         ClearVisualReviewCommand = new RelayCommand(ClearVisualReview,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
                   SelectedVisualDuplicateGroup is not null);
         QuarantineMarkedVisualCommand = new AsyncRelayCommand(QuarantineMarkedVisualAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
                   SelectedVisualDuplicateGroup is not null);
-        PreviousVisualGroupCommand = new RelayCommand(() => MoveVisualReview(-1), () => CanMoveReview(VisualDuplicateGroups.Count, SelectedVisualDuplicateGroup is null ? -1 : VisualDuplicateGroups.IndexOf(SelectedVisualDuplicateGroup)));
-        NextVisualGroupCommand = new RelayCommand(() => MoveVisualReview(1), () => CanMoveReview(VisualDuplicateGroups.Count, SelectedVisualDuplicateGroup is null ? -1 : VisualDuplicateGroups.IndexOf(SelectedVisualDuplicateGroup)));
-        ToggleVisualReviewedCommand = new AsyncRelayCommand(ToggleVisualReviewedAsync, () => CanPerformCatalogReview && SelectedVisualDuplicateGroup is not null);
 
         FindBurstsCommand = new AsyncRelayCommand(FindBurstsAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning);
@@ -941,20 +1256,17 @@ public sealed class MainViewModel : ObservableObject
         AnalyzeSelectedBurstQualityCommand = new AsyncRelayCommand(AnalyzeSelectedBurstQualityAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
                   SelectedBurstGroup is not null && SelectedBurstGroup.Files.Count > 0);
-        ApplyBurstRecommendationCommand = new RelayCommand(ApplyBurstRecommendationsAsKeepers,
+        ApplyBurstRecommendationCommand = new RelayCommand(ApplyBurstRecommendationToQuarantineMarks,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
                   SelectedBurstGroup?.CanRecommend == true);
-        MarkBurstOthersCommand = new RelayCommand(MarkBurstOthers,
+        MarkBurstOthersCommand = new RelayCommand(MarkBurstOthersForQuarantine,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
-                  SelectedBurstGroup is not null);
+                  SelectedBurstGroup is not null && SelectedBurstFile is not null);
         ClearBurstReviewCommand = new RelayCommand(ClearBurstReview,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedBurstGroup is not null);
         QuarantineMarkedBurstCommand = new AsyncRelayCommand(QuarantineMarkedBurstAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
                   SelectedBurstGroup is not null);
-        PreviousBurstGroupCommand = new RelayCommand(() => MoveBurstReview(-1), () => CanMoveReview(BurstGroups.Count, SelectedBurstGroup is null ? -1 : BurstGroups.IndexOf(SelectedBurstGroup)));
-        NextBurstGroupCommand = new RelayCommand(() => MoveBurstReview(1), () => CanMoveReview(BurstGroups.Count, SelectedBurstGroup is null ? -1 : BurstGroups.IndexOf(SelectedBurstGroup)));
-        ToggleBurstReviewedCommand = new AsyncRelayCommand(ToggleBurstReviewedAsync, () => CanPerformCatalogReview && SelectedBurstGroup is not null);
 
         AnalyzePeopleCommand = new AsyncRelayCommand(AnalyzePeopleAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning);
@@ -976,32 +1288,29 @@ public sealed class MainViewModel : ObservableObject
         RefreshPeopleCommand = new AsyncRelayCommand(LoadPeopleAsync,
             () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning);
         RenamePersonCommand = new AsyncRelayCommand(RenameSelectedPersonAsync,
-            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonGroup is { Id: > 0 });
+            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && HasSingleSelectedRealPersonGroup());
         AssignFaceToPersonCommand = new AsyncRelayCommand(AssignSelectedFaceToPersonAsync,
             () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonFace is not null && PersonGroups.Any(x => x.Id > 0 && x.Id != SelectedPersonFace.PersonId));
         MergePersonGroupCommand = new AsyncRelayCommand(MergeSelectedPersonGroupAsync,
-            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonGroup is { Id: > 0 } && PersonGroups.Any(x => x.Id > 0 && x.Id != SelectedPersonGroup.Id));
+            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && CanMergeCurrentPersonSelection());
         DeletePersonGroupCommand = new AsyncRelayCommand(DeleteSelectedPersonGroupAsync,
-            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonGroup is { Id: > 0 });
+            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && CanDeleteCurrentPersonSelection());
         RemoveFaceFromPersonCommand = new AsyncRelayCommand(RemoveSelectedFaceFromPersonAsync,
             () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonFace?.PersonId is not null);
         IgnoreFaceCommand = new AsyncRelayCommand(IgnoreSelectedFaceAsync,
             () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonFace is not null);
         IgnorePersonGroupCommand = new AsyncRelayCommand(IgnoreSelectedPersonGroupAsync,
-            () => CanPerformCatalogReview && SelectedPersonGroup is not null && SelectedPersonGroup.FaceCount > 0);
+            () => CanPerformCatalogReview && CanIgnoreCurrentPersonSelection());
         UndoLastFaceIgnoreCommand = new AsyncRelayCommand(UndoLastFaceIgnoreAsync,
             () => CanPerformCatalogReview && LatestFaceIgnoreAction?.IsActive == true);
-        PreviousPersonGroupCommand = new RelayCommand(() => MovePeopleReview(-1), () => CanMoveReview(PersonGroups.Count, SelectedPersonGroup is null ? -1 : PersonGroups.IndexOf(SelectedPersonGroup)));
-        NextPersonGroupCommand = new RelayCommand(() => MovePeopleReview(1), () => CanMoveReview(PersonGroups.Count, SelectedPersonGroup is null ? -1 : PersonGroups.IndexOf(SelectedPersonGroup)));
-        TogglePersonReviewedCommand = new AsyncRelayCommand(TogglePersonReviewedAsync, () => CanPerformCatalogReview && SelectedPersonGroup is not null);
         ShowPersonPhotosCommand = new AsyncRelayCommand(ShowSelectedPersonPhotosAsync,
-            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonGroup is { Id: > 0 });
+            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && HasSingleSelectedRealPersonGroup());
         ShowPersonFaceInExplorerCommand = new RelayCommand(ShowPersonFaceInExplorer,
             () => SelectedPersonFace is not null && File.Exists(SelectedPersonFace.FullPath));
         OpenPersonPhotoCommand = new RelayCommand(OpenPersonPhoto,
             () => SelectedPersonFace is not null && File.Exists(SelectedPersonFace.FullPath));
         SetPersonCoverCommand = new AsyncRelayCommand(SetSelectedPersonCoverAsync,
-            () => CanPerformCatalogReview && SelectedPersonGroup is { Id: > 0 } && SelectedPersonFace?.PersonId == SelectedPersonGroup.Id);
+            () => CanPerformCatalogReview && HasSingleSelectedRealPersonGroup() && SelectedPersonGroup is { Id: > 0 } && SelectedPersonFace?.PersonId == SelectedPersonGroup.Id);
 
         AnalyzeEventsCommand = new AsyncRelayCommand(AnalyzeEventsAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning);
@@ -1030,9 +1339,6 @@ public sealed class MainViewModel : ObservableObject
             () => SelectedEventPhoto is not null && File.Exists(SelectedEventPhoto.FullPath));
         OpenEventPhotoCommand = new RelayCommand(OpenEventPhoto,
             () => SelectedEventPhoto is not null && File.Exists(SelectedEventPhoto.FullPath));
-        PreviousEventGroupCommand = new RelayCommand(() => MoveEventReview(-1), () => CanMoveReview(EventGroups.Count, SelectedEventGroup is null ? -1 : EventGroups.IndexOf(SelectedEventGroup)));
-        NextEventGroupCommand = new RelayCommand(() => MoveEventReview(1), () => CanMoveReview(EventGroups.Count, SelectedEventGroup is null ? -1 : EventGroups.IndexOf(SelectedEventGroup)));
-        ToggleEventReviewedCommand = new AsyncRelayCommand(ToggleEventReviewedAsync, () => CanPerformCatalogReview && SelectedEventGroup is not null);
         SetEventCoverCommand = new AsyncRelayCommand(SetSelectedEventCoverAsync,
             () => CanPerformCatalogReview && SelectedEventGroup is { Id: > 0 } && SelectedEventPhoto is not null);
         EditEventNotesCommand = new AsyncRelayCommand(EditSelectedEventNotesAsync,
@@ -1188,18 +1494,19 @@ public sealed class MainViewModel : ObservableObject
             else
             {
                 var result = await _database.RemoveSourceFolderAndCatalogAsync(source.Path);
-                if (result.ActiveQuarantineCount > 0)
-                    throw new InvalidOperationException($"У этого источника {result.ActiveQuarantineCount:N0} активных файлов в карантине. Сначала разберите их через вкладку «Карантин / Undo».");
 
                 foreach (var cacheFile in result.CacheFilesToDelete.Distinct(StringComparer.OrdinalIgnoreCase))
                 {
-                    try { if (File.Exists(cacheFile)) File.Delete(cacheFile); }
-                    catch (Exception ex) { LoggingService.Warn("Не удалось удалить файл кэша после удаления источника: " + cacheFile + " — " + ex.Message); }
+                    if (!CacheFileSafety.TryDeleteGeneratedCacheFile(cacheFile, out var cacheDeleteError))
+                        LoggingService.Warn("Не удалён файл кэша после удаления источника: " + cacheFile + " — " + cacheDeleteError);
                 }
 
+                var quarantineSuffix = result.ActiveQuarantineCount > 0
+                    ? $" В карантине оставлено {result.ActiveQuarantineCount:N0} файлов этого источника; их можно восстановить или удалить позже через «Карантин / Undo»."
+                    : "";
                 StatusText = result.AuditRecordsRetained > 0
-                    ? $"Источник убран. Из активного каталога удалено {result.DeletedCatalogRecords:N0} записей; {result.AuditRecordsRetained:N0} скрытых строк сохранено только для журнала Undo/аудита. Файлы на диске не тронуты."
-                    : $"Источник убран. Из каталога PAM удалено {result.DeletedCatalogRecords:N0} записей. Файлы на диске не тронуты.";
+                    ? $"Источник убран. Из активного каталога удалено {result.DeletedCatalogRecords:N0} записей; {result.AuditRecordsRetained:N0} скрытых строк сохранено только для Undo/аудита. Файлы на диске не тронуты.{quarantineSuffix}"
+                    : $"Источник убран. Из каталога PAM удалено {result.DeletedCatalogRecords:N0} записей. Файлы на диске не тронуты.{quarantineSuffix}";
             }
 
             SelectedSource = null;
@@ -1269,7 +1576,9 @@ public sealed class MainViewModel : ObservableObject
         {
             var paths = Sources.Select(x => x.Path).ToList();
             await _scanner.ScanAsync(paths, progress, _scanCts.Token);
-            StatusText = "Сканирование завершено.";
+            StatusText = _scanner.HadIncompleteTraversal
+                ? "Сканирование завершено с предупреждением: один из источников был прочитан не полностью. Статус отсутствующих файлов для него не менялся."
+                : "Сканирование завершено.";
         }
         catch (OperationCanceledException)
         {
@@ -1415,32 +1724,13 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void SetVisualKeeper()
-    {
-        var group = SelectedVisualDuplicateGroup;
-        var selected = SelectedVisualDuplicateFile;
-        if (group is null || selected is null) return;
-
-        // Visual groups are suggestions, not exact duplicate sets. More than one image may
-        // legitimately be worth keeping, so this action adds the selected photo to the keepers
-        // instead of silently clearing other manual "keep" marks.
-        selected.IsManualKeeper = true;
-        selected.IsMarkedForQuarantine = false;
-
-        StatusText = $"Ручной выбор: ОСТАВИТЬ {selected.FileName}. В визуальной группе можно оставить несколько кадров; в карантин попадут только отдельно отмеченные файлы.";
-        RaiseVisualCommands();
-    }
-
     private void ClearVisualReview()
     {
         var group = SelectedVisualDuplicateGroup;
         if (group is null) return;
         foreach (var file in group.Files)
-        {
             file.IsMarkedForQuarantine = false;
-            file.IsManualKeeper = false;
-        }
-        StatusText = "Ручные отметки текущей визуальной группы очищены.";
+        StatusText = "Отметки «в карантин» текущей визуальной группы очищены.";
         RaiseVisualCommands();
     }
 
@@ -1448,32 +1738,30 @@ public sealed class MainViewModel : ObservableObject
     {
         var group = SelectedVisualDuplicateGroup;
         if (group is null) return;
-        var keepers = group.Files.Where(x => x.IsManualKeeper).ToList();
-        if (keepers.Count == 0)
-        {
-            MessageBox.Show("Сначала отметьте один или несколько кадров «Оставить».", "Нужен ручной выбор", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
 
-        var keeperIds = keepers.Select(x => x.Id).ToHashSet();
-        var marked = group.Files.Where(x => x.IsMarkedForQuarantine && !keeperIds.Contains(x.Id)).ToList();
+        var marked = group.Files.Where(x => x.IsMarkedForQuarantine).ToList();
         if (marked.Count == 0)
         {
             MessageBox.Show("Отметьте галочками конкретные файлы, которые хотите отправить в карантин.", "Ничего не отмечено", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
+        var keepers = group.Files.Where(x => !x.IsMarkedForQuarantine).ToList();
+        if (keepers.Count == 0)
+        {
+            MessageBox.Show("Нельзя отправить в карантин всю группу. Снимите галочку «в карантин» хотя бы с одного файла — неотмеченные файлы остаются на месте.", "Нужно оставить хотя бы один файл", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
         var bytes = marked.Sum(x => x.FileSize);
         var minSimilarity = marked.Min(x => x.SimilarityPercent);
-        var keeperNames = string.Join("\n", keepers.Take(8).Select(x => "• " + x.FileName));
-        if (keepers.Count > 8) keeperNames += $"\n• …ещё {keepers.Count - 8:N0}";
         var answer = MessageBox.Show(
-            $"Вы вручную назначили ОСТАВИТЬ ({keepers.Count:N0}):\n{keeperNames}\n\n" +
+            $"Останется на месте: {keepers.Count:N0} файл(ов).\n" +
             $"В карантин будет перемещено: {marked.Count:N0} файлов ({ByteFormatter.Format(bytes)}).\n" +
             $"Минимальное сходство с представителем группы: {minSimilarity:0.0}%.\n\n" +
             "ВАЖНО: это визуально похожие кадры, а НЕ доказанные SHA-256 дубли. " +
-            "PAM переместит только отмеченные вами файлы. Карантин обратим через Undo.\n\nПродолжить?",
-            "Подтвердить ручной карантин визуальных копий",
+            "PAM переместит только отмеченные галочкой «в карантин» файлы; все неотмеченные останутся. Карантин обратим через Undo.\n\nПродолжить?",
+            "Подтвердить карантин визуальных копий",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No);
@@ -1483,7 +1771,7 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             StatusText = "Проверка файлов и перенос отмеченных визуальных копий в карантин…";
-            var result = await _quarantineService.QuarantineSelectedVisualAsync(group, keepers, marked);
+            var result = await _quarantineService.QuarantineSelectedVisualAsync(group, marked);
             StatusText = result.Failed == 0
                 ? $"В карантин перемещено {result.Succeeded:N0} отмеченных файлов ({ByteFormatter.Format(result.BytesMoved)})."
                 : $"Ручной карантин: успешно {result.Succeeded:N0}, ошибок {result.Failed:N0}.";
@@ -1617,29 +1905,26 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void ApplyBurstRecommendationsAsKeepers()
+    private void ApplyBurstRecommendationToQuarantineMarks()
     {
         var group = SelectedBurstGroup;
         if (group is null || !group.CanRecommend) return;
         group.ApplyRecommendations(SelectedBurstKeepCount);
         foreach (var file in group.Files)
-        {
-            file.IsManualKeeper = file.IsRecommended;
-            file.IsMarkedForQuarantine = false;
-        }
-        StatusText = $"Рекомендация применена только как отметки: ОСТАВИТЬ {group.RecommendedCount} из {group.FileCount}. Ничего не перемещено.";
+            file.IsMarkedForQuarantine = !file.IsRecommended;
+        var marked = group.Files.Count(x => x.IsMarkedForQuarantine);
+        StatusText = $"Рекомендация применена: оставить {group.RecommendedCount:N0}, в карантин отмечено {marked:N0}. Ничего ещё не перемещено; галочки можно изменить вручную.";
         RaiseBurstCommands();
     }
 
-    private void MarkBurstOthers()
+    private void MarkBurstOthersForQuarantine()
     {
         var group = SelectedBurstGroup;
-        if (group is null) return;
-        var keepers = group.Files.Where(x => x.IsManualKeeper).ToList();
-        if (keepers.Count == 0) return;
+        var selected = SelectedBurstFile;
+        if (group is null || selected is null) return;
         foreach (var file in group.Files)
-            file.IsMarkedForQuarantine = !file.IsManualKeeper;
-        StatusText = $"Отмечено кандидатов в карантин: {group.Files.Count(x => x.IsMarkedForQuarantine):N0}. Это только галочки — файлы ещё не перемещались.";
+            file.IsMarkedForQuarantine = file.Id != selected.Id;
+        StatusText = $"Кадр {selected.FileName} оставлен без отметки; остальные {group.Files.Count - 1:N0} отмечены «в карантин». Файлы ещё не перемещались.";
         RaiseBurstCommands();
     }
 
@@ -1648,11 +1933,8 @@ public sealed class MainViewModel : ObservableObject
         var group = SelectedBurstGroup;
         if (group is null) return;
         foreach (var file in group.Files)
-        {
             file.IsMarkedForQuarantine = false;
-            file.IsManualKeeper = false;
-        }
-        StatusText = "Ручные отметки выбранной серии очищены. Рекомендационные звёздочки оставлены как подсказка.";
+        StatusText = "Отметки «в карантин» выбранной серии очищены. Рекомендационные звёздочки оставлены как подсказка.";
         RaiseBurstCommands();
     }
 
@@ -1660,28 +1942,28 @@ public sealed class MainViewModel : ObservableObject
     {
         var group = SelectedBurstGroup;
         if (group is null) return;
-        var keepers = group.Files.Where(x => x.IsManualKeeper).ToList();
-        var marked = group.Files.Where(x => x.IsMarkedForQuarantine && !x.IsManualKeeper).ToList();
 
-        if (keepers.Count == 0)
-        {
-            MessageBox.Show("Сначала отметьте один или несколько кадров ОСТАВИТЬ. Можно применить рекомендацию PAM, а затем вручную изменить галочки.", "Нужны сохраняемые кадры", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
+        var marked = group.Files.Where(x => x.IsMarkedForQuarantine).ToList();
         if (marked.Count == 0)
         {
             MessageBox.Show("Не отмечено ни одного кадра для карантина.", "Ничего не отмечено", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
+        var keepers = group.Files.Where(x => !x.IsMarkedForQuarantine).ToList();
+        if (keepers.Count == 0)
+        {
+            MessageBox.Show("Нельзя отправить в карантин всю серию. Снимите галочку «в карантин» хотя бы с одного кадра — все неотмеченные кадры остаются на месте.", "Нужно оставить хотя бы один кадр", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
         var bytes = marked.Sum(x => x.FileSize);
-        var keeperNames = string.Join("\n", keepers.Take(5).Select(x => "• " + x.FileName));
-        if (keepers.Count > 5) keeperNames += $"\n• …ещё {keepers.Count - 5:N0}";
         var answer = MessageBox.Show(
-            $"Серия: {group.HeaderText}\n\nОСТАВИТЬ ({keepers.Count:N0}):\n{keeperNames}\n\n" +
-            $"В карантин переместятся только отмеченные вами кадры: {marked.Count:N0} ({ByteFormatter.Format(bytes)}).\n\n" +
+            $"Серия: {group.HeaderText}\n\n" +
+            $"Останется на месте: {keepers.Count:N0} кадр(ов).\n" +
+            $"В карантин переместятся отмеченные: {marked.Count:N0} ({ByteFormatter.Format(bytes)}).\n\n" +
             "ВАЖНО: кадры серии НЕ являются дублями. Рекомендация основана на времени, визуальной близости и техническом Quality Score. " +
-            "Перед переносом каждый файл проверяется; карантин полностью обратим через Undo.\n\nПродолжить?",
+            "PAM переместит только отмеченные галочкой «в карантин» кадры; все неотмеченные останутся. Карантин полностью обратим через Undo.\n\nПродолжить?",
             "Подтвердить карантин кадров серии",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
@@ -1692,7 +1974,7 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             StatusText = "Проверка и перенос отмеченных кадров серии в карантин…";
-            var result = await _quarantineService.QuarantineSelectedBurstAsync(group, keepers, marked);
+            var result = await _quarantineService.QuarantineSelectedBurstAsync(group, marked);
             StatusText = result.Failed == 0
                 ? $"В карантин перемещено {result.Succeeded:N0} кадров серии ({ByteFormatter.Format(result.BytesMoved)})."
                 : $"Карантин серии: успешно {result.Succeeded:N0}, ошибок {result.Failed:N0}.";
@@ -1728,9 +2010,9 @@ public sealed class MainViewModel : ObservableObject
         var previous = SelectedBurstGroup;
         var oldKey = preferredGroupKey ?? previous?.GroupKey;
         var oldFileId = preferredFileId ?? SelectedBurstFile?.Id;
-        var reviewState = previous is not null && previous.GroupKey == oldKey
-            ? previous.Files.ToDictionary(x => x.Id, x => (x.IsManualKeeper, x.IsMarkedForQuarantine))
-            : new Dictionary<long, (bool IsManualKeeper, bool IsMarkedForQuarantine)>();
+        var quarantineState = previous is not null && previous.GroupKey == oldKey
+            ? previous.Files.ToDictionary(x => x.Id, x => x.IsMarkedForQuarantine)
+            : new Dictionary<long, bool>();
 
         BurstGroups.Clear();
         foreach (var group in groups)
@@ -1744,9 +2026,8 @@ public sealed class MainViewModel : ObservableObject
         {
             foreach (var file in SelectedBurstGroup.Files)
             {
-                if (!reviewState.TryGetValue(file.Id, out var state)) continue;
-                file.IsManualKeeper = state.IsManualKeeper;
-                file.IsMarkedForQuarantine = state.IsMarkedForQuarantine;
+                if (quarantineState.TryGetValue(file.Id, out var isMarkedForQuarantine))
+                    file.IsMarkedForQuarantine = isMarkedForQuarantine;
             }
             SelectedBurstGroup.NotifySummaryChanged();
         }
@@ -1782,9 +2063,9 @@ public sealed class MainViewModel : ObservableObject
         var previousGroup = SelectedVisualDuplicateGroup;
         var oldKey = preferredGroupKey ?? previousGroup?.GroupKey;
         var oldFileId = preferredFileId ?? SelectedVisualDuplicateFile?.Id;
-        var reviewState = previousGroup is not null && previousGroup.GroupKey == oldKey
-            ? previousGroup.Files.ToDictionary(x => x.Id, x => (x.IsManualKeeper, x.IsMarkedForQuarantine))
-            : new Dictionary<long, (bool IsManualKeeper, bool IsMarkedForQuarantine)>();
+        var quarantineState = previousGroup is not null && previousGroup.GroupKey == oldKey
+            ? previousGroup.Files.ToDictionary(x => x.Id, x => x.IsMarkedForQuarantine)
+            : new Dictionary<long, bool>();
 
         VisualDuplicateGroups.Clear();
         foreach (var group in groups) VisualDuplicateGroups.Add(group);
@@ -1793,9 +2074,8 @@ public sealed class MainViewModel : ObservableObject
         {
             foreach (var file in SelectedVisualDuplicateGroup.Files)
             {
-                if (!reviewState.TryGetValue(file.Id, out var state)) continue;
-                file.IsManualKeeper = state.IsManualKeeper;
-                file.IsMarkedForQuarantine = state.IsMarkedForQuarantine;
+                if (quarantineState.TryGetValue(file.Id, out var isMarkedForQuarantine))
+                    file.IsMarkedForQuarantine = isMarkedForQuarantine;
             }
         }
         if (SelectedVisualDuplicateGroup is not null && oldFileId.HasValue)
@@ -1951,8 +2231,10 @@ public sealed class MainViewModel : ObservableObject
         if (target is null) throw new InvalidOperationException("Целевая группа больше не существует.");
         await _database.AssignFaceToPersonAsync(face.FaceId, targetPersonId);
         StatusText = $"Лицо из «{face.FileName}» перенесено в группу «{target.DisplayName}». Фотография не изменена.";
+        // Keep the source group selected after moving a face so the user can continue
+        // cleaning that group. LoadPeopleAsync preserves the current group by Id when
+        // it still contains faces; only an emptied/disappeared source falls back.
         await LoadPeopleAsync();
-        SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == targetPersonId) ?? PersonGroups.FirstOrDefault();
     }
 
     private async Task AssignSelectedFaceToPersonAsync()
@@ -1974,53 +2256,117 @@ public sealed class MainViewModel : ObservableObject
         var target = dialog.SelectedGroup;
         await _database.AssignFaceToPersonAsync(face.FaceId, target.Id);
         StatusText = $"Лицо назначено группе «{target.DisplayName}». Фотография не изменена.";
+        // Stay in the source group after assigning the face elsewhere.
         await LoadPeopleAsync();
-        SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == target.Id) ?? PersonGroups.FirstOrDefault();
     }
 
     private async Task MergeSelectedPersonGroupAsync()
     {
-        var source = SelectedPersonGroup;
-        if (source is null || source.Id <= 0) return;
+        var selected = GetSelectedPersonGroups();
+        var realGroups = selected.Where(x => x.Id > 0).ToList();
+        if (realGroups.Count == 0) return;
+
+        if (realGroups.Count >= 2)
+        {
+            var preferredTarget = GetPreferredPersonMergeTarget(realGroups);
+            var dialog = new PersonPickerWindow(
+                $"Объединить {realGroups.Count:N0} выбранных групп. В какую группу объединить остальные?\nИмя и обложка выбранной здесь группы сохранятся:",
+                realGroups,
+                preferredTarget?.Id)
+            {
+                Owner = Application.Current?.MainWindow
+            };
+            if (dialog.ShowDialog() != true || dialog.SelectedGroup is null) return;
+            var target = dialog.SelectedGroup;
+            var sources = realGroups.Where(x => x.Id != target.Id).ToList();
+            var preview = string.Join("\n", realGroups.Take(8).Select(x => "• " + x.DisplayName));
+            if (realGroups.Count > 8) preview += $"\n• …и ещё {realGroups.Count - 8:N0}";
+            var answer = MessageBox.Show(
+                $"Объединить выбранные группы в «{target.DisplayName}»?\n\n{preview}\n\n" +
+                $"Будет перенесено лиц: {sources.Sum(x => x.FaceCount):N0}. Имя и обложка группы «{target.DisplayName}» сохранятся; остальные выбранные группы будут удалены из каталога PAM.\n\n" +
+                "Исходные фотографии не изменяются.",
+                "Объединить выбранные группы людей",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes) return;
+
+            await _database.MergePersonGroupsBatchAsync(realGroups.Select(x => x.Id), target.Id);
+            _preferredPersonMergeTargetId = target.Id;
+            StatusText = $"Объединено групп: {realGroups.Count:N0} → «{target.DisplayName}». Фотографии не изменены.";
+            await LoadPeopleAsync();
+            SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == target.Id) ?? PersonGroups.FirstOrDefault();
+            return;
+        }
+
+        var source = realGroups[0];
         var targets = PersonGroups.Where(x => x.Id > 0 && x.Id != source.Id).ToList();
         if (targets.Count == 0) return;
 
-        var dialog = new PersonPickerWindow($"Объединить всю группу «{source.DisplayName}» с:", targets)
+        var preferredSingleTarget = GetPreferredPersonMergeTarget(targets);
+        var singleDialog = new PersonPickerWindow(
+            $"В какую группу объединить «{source.DisplayName}»?\nИмя и обложка выбранной здесь группы сохранятся:",
+            targets,
+            preferredSingleTarget?.Id)
         {
             Owner = Application.Current?.MainWindow
         };
-        if (dialog.ShowDialog() != true || dialog.SelectedGroup is null) return;
-        var target = dialog.SelectedGroup;
-        var answer = MessageBox.Show(
-            $"Перенести все {source.FaceCount:N0} лиц из группы «{source.DisplayName}» в «{target.DisplayName}»?\n\nЭто меняет только локальный каталог лиц. Исходные фотографии не изменяются.",
+        if (singleDialog.ShowDialog() != true || singleDialog.SelectedGroup is null) return;
+        var singleTarget = singleDialog.SelectedGroup;
+        var singleAnswer = MessageBox.Show(
+            $"Перенести все {source.FaceCount:N0} лиц из группы «{source.DisplayName}» в «{singleTarget.DisplayName}»?\n\nЭто меняет только локальный каталог лиц. Исходные фотографии не изменяются.",
             "Объединить группы людей",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);
-        if (answer != MessageBoxResult.Yes) return;
+        if (singleAnswer != MessageBoxResult.Yes) return;
 
-        await _database.MergePersonGroupsAsync(source.Id, target.Id);
-        StatusText = $"Группы объединены в «{target.DisplayName}». Фотографии не изменены.";
+        await _database.MergePersonGroupsAsync(source.Id, singleTarget.Id);
+        _preferredPersonMergeTargetId = singleTarget.Id;
+        StatusText = $"Группы объединены в «{singleTarget.DisplayName}». Фотографии не изменены.";
         await LoadPeopleAsync();
-        SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == target.Id) ?? PersonGroups.FirstOrDefault();
+        SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == singleTarget.Id) ?? PersonGroups.FirstOrDefault();
     }
 
     private async Task DeleteSelectedPersonGroupAsync()
     {
-        var group = SelectedPersonGroup;
-        if (group is null || group.Id <= 0) return;
+        var groups = GetSelectedPersonGroups().Where(x => x.Id > 0).ToList();
+        if (groups.Count == 0) return;
 
-        var namedWarning = group.IsNamed
-            ? $"\n\nВНИМАНИЕ: имя «{group.Name}» тоже будет удалено из локального каталога."
-            : "";
-        var answer = MessageBox.Show(
-            $"Удалить / расформировать всю группу «{group.DisplayName}»?\n\nВсе {group.FaceCount:N0} лиц этой группы одним действием вернутся в «Без группы».{namedWarning}\n\nФотографии на диске НЕ удаляются, не перемещаются и не изменяются.",
-            "Удалить группу людей",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-        if (answer != MessageBoxResult.Yes) return;
+        if (groups.Count == 1)
+        {
+            var group = groups[0];
+            var namedWarning = group.IsNamed
+                ? $"\n\nВНИМАНИЕ: имя «{group.Name}» тоже будет удалено из локального каталога."
+                : "";
+            var answer = MessageBox.Show(
+                $"Расформировать группу «{group.DisplayName}»?\n\nВсе {group.FaceCount:N0} лиц этой группы вернутся в «Без группы» и снова смогут участвовать в автоматической группировке.{namedWarning}\n\nФотографии на диске НЕ удаляются, не перемещаются и не изменяются.",
+                "Расформировать группу людей",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (answer != MessageBoxResult.Yes) return;
 
-        var affected = await _database.DeletePersonGroupAsync(group.Id);
-        StatusText = $"Группа «{group.DisplayName}» удалена из каталога людей. {affected:N0} лиц возвращено в «Без группы». Фотографии не изменены.";
+            var affected = await _database.DeletePersonGroupAsync(group.Id);
+            StatusText = $"Группа «{group.DisplayName}» расформирована. {affected:N0} лиц возвращено в «Без группы» и снова участвует в группировке. Фотографии не изменены.";
+        }
+        else
+        {
+            var named = groups.Count(x => x.IsNamed);
+            var preview = string.Join("\n", groups.Take(8).Select(x => "• " + x.DisplayName));
+            if (groups.Count > 8) preview += $"\n• …и ещё {groups.Count - 8:N0}";
+            var answer = MessageBox.Show(
+                $"Расформировать {groups.Count:N0} выбранных групп?\n\n{preview}\n\n" +
+                $"Лиц вернётся в «Без группы»: {groups.Sum(x => x.FaceCount):N0}. Именованных групп будет удалено: {named:N0}.\n\n" +
+                "Фотографии на диске НЕ удаляются, не перемещаются и не изменяются.",
+                "Расформировать выбранные группы людей",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes) return;
+
+            var affected = await _database.DeletePersonGroupsAsync(groups.Select(x => x.Id));
+            StatusText = $"Расформировано групп: {groups.Count:N0}. Лиц возвращено в «Без группы»: {affected:N0}. Фотографии не изменены.";
+        }
+
         await LoadPeopleAsync();
         SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == 0) ?? PersonGroups.FirstOrDefault();
     }
@@ -2048,7 +2394,7 @@ public sealed class MainViewModel : ObservableObject
         var face = SelectedPersonFace;
         if (face is null) return;
         var answer = MessageBox.Show(
-            "Пометить это обнаружение как «не лицо / не учитывать»?\n\nИсходная фотография не изменится. PAM сохранит служебную Undo-запись, поэтому последнее игнорирование можно восстановить кнопкой в разделе «Люди».",
+            "Пометить это обнаружение как «не лицо / не учитывать»?\n\nИсходная фотография не изменится. PAM сохранит служебную Undo-запись, поэтому последнее исключение можно восстановить кнопкой в разделе «Люди».",
             "Игнорировать обнаружение",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question,
@@ -2063,21 +2409,48 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task IgnoreSelectedPersonGroupAsync()
     {
-        var group = SelectedPersonGroup;
-        if (group is null || group.FaceCount <= 0) return;
-        var answer = MessageBox.Show(
-            $"Игнорировать всю группу «{group.DisplayName}» ({group.FaceCount:N0} лиц)?\n\n" +
-            "Все обнаружения этой группы будут скрыты из группировки лиц только в каталоге PAM. Исходные фотографии не изменяются. " +
-            "PAM сохранит состав группы и прежнюю принадлежность каждого лица для Undo.",
-            "Игнорировать всю группу лиц",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            MessageBoxResult.No);
-        if (answer != MessageBoxResult.Yes) return;
+        var groups = GetSelectedPersonGroups().Where(x => x.FaceCount > 0).ToList();
+        if (groups.Count == 0) return;
 
-        var ignored = await _database.IgnorePersonGroupAsync(group.Id, group.DisplayName);
-        LatestFaceIgnoreAction = await _database.GetLatestActiveFaceIgnoreActionAsync();
-        StatusText = $"Группа «{group.DisplayName}» скрыта из каталога лиц: {ignored:N0} обнаружений. Undo доступен; файлы не изменены.";
+        if (groups.Count == 1)
+        {
+            var group = groups[0];
+            var answer = MessageBox.Show(
+                $"Исключить лица группы «{group.DisplayName}» из раздела «Люди» ({group.FaceCount:N0} лиц)?\n\n" +
+                "Эти обнаружения перестанут показываться в разделе «Люди» и участвовать в автоматической группировке. " +
+                "В отличие от команды «Расформировать группу», они НЕ вернутся в «Без группы».\n\n" +
+                "Исходные фотографии не изменяются. PAM сохранит состав группы и прежнюю принадлежность каждого лица для Undo.",
+                "Исключить лица группы",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes) return;
+
+            var ignored = await _database.IgnorePersonGroupAsync(group.Id, group.DisplayName);
+            LatestFaceIgnoreAction = await _database.GetLatestActiveFaceIgnoreActionAsync();
+            StatusText = $"Из раздела «Люди» исключено {ignored:N0} обнаружений группы «{group.DisplayName}». Они больше не участвуют в группировке. Undo доступен; файлы не изменены.";
+        }
+        else
+        {
+            var preview = string.Join("\n", groups.Take(8).Select(x => "• " + x.DisplayName));
+            if (groups.Count > 8) preview += $"\n• …и ещё {groups.Count - 8:N0}";
+            var faceCount = groups.Sum(x => x.FaceCount);
+            var answer = MessageBox.Show(
+                $"Исключить все лица {groups.Count:N0} выбранных элементов из раздела «Люди»?\n\n{preview}\n\n" +
+                $"Будет исключено до {faceCount:N0} обнаружений. Они перестанут показываться и участвовать в группировке.\n\n" +
+                "Для каждой выбранной группы PAM сохранит отдельную Undo-запись, чтобы её имя/тип можно было восстановить корректно. Исходные фотографии не изменяются.",
+                "Исключить выбранные группы",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes) return;
+
+            var batch = await _database.IgnorePersonGroupsBatchAsync(
+                groups.Select(x => (x.Id, $"Пакетное исключение: {x.DisplayName}")));
+            LatestFaceIgnoreAction = await _database.GetLatestActiveFaceIgnoreActionAsync();
+            StatusText = $"Из раздела «Люди» исключено обнаружений: {batch.FacesIgnored:N0} из {groups.Count:N0} выбранных элементов. Undo-записей: {batch.ActionsCreated:N0}; восстанавливаются по одной, начиная с последней. Файлы не изменены.";
+        }
+
         await LoadPeopleAsync();
     }
 
@@ -2086,9 +2459,9 @@ public sealed class MainViewModel : ObservableObject
         var action = LatestFaceIgnoreAction;
         if (action is null || !action.IsActive) return;
         var answer = MessageBox.Show(
-            $"Восстановить последнее игнорирование?\n\n{action.ScopeLabel}\nЛиц: {action.FaceCount:N0}\n\n" +
+            $"Восстановить последнее исключение?\n\n{action.ScopeLabel}\nЛиц: {action.FaceCount:N0}\n\n" +
             "PAM вернёт служебные записи лиц и их прежние группы, если соответствующие записи лиц ещё существуют. Фотографии не изменяются.",
-            "Undo игнорирования лиц",
+            "Восстановить исключённые лица",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question,
             MessageBoxResult.No);
@@ -2107,6 +2480,7 @@ public sealed class MainViewModel : ObservableObject
         SearchText = "";
         SelectedYear = "Все";
         SelectedCamera = "Все";
+        SelectedReviewFilter = ReviewAll;
         SelectedSource = null;
         _eventFilterId = null;
         _eventFilterName = "";
@@ -2294,27 +2668,52 @@ public sealed class MainViewModel : ObservableObject
         var targets = EventGroups.Where(x => x.Id != source.Id).ToList();
         if (targets.Count == 0) return;
 
-        var dialog = new EventPickerWindow(targets, source.DisplayName)
+        var dialog = new EventPickerWindow(targets)
         {
             Owner = Application.Current?.MainWindow
         };
         if (dialog.ShowDialog() != true || dialog.SelectedEvent is null) return;
         var target = dialog.SelectedEvent;
-        var name = string.IsNullOrWhiteSpace(dialog.EventName) ? target.DisplayName : dialog.EventName.Trim();
 
         var answer = MessageBox.Show(
             $"Объединить события:\n\n«{source.DisplayName}» ({source.PhotoCount:N0} фото)\n+\n«{target.DisplayName}» ({target.PhotoCount:N0} фото)\n\n" +
-            $"Итоговое название: «{name}»\n\nЭто меняет только локальный каталог событий. Исходные фотографии не перемещаются и не изменяются.",
+            $"Останется событие «{target.DisplayName}»: его имя и обложка имеют приоритет.\n\n" +
+            "Это меняет только локальный каталог событий. Исходные фотографии не перемещаются и не изменяются.",
             "Объединить события",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question,
             MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
 
-        await _database.MergeEventsAsync(source.Id, target.Id, name);
-        StatusText = $"События объединены в «{name}». Файлы остались на прежних местах.";
-        await LoadEventsAsync();
-        SelectedEventGroup = EventGroups.FirstOrDefault(x => x.Id == target.Id) ?? EventGroups.FirstOrDefault();
+        await MergeEventIntoAsync(source.Id, target.Id);
+    }
+
+    public async Task MergeEventIntoAsync(long sourceEventId, long targetEventId)
+    {
+        if (!CanMoveEventPhotos) throw new InvalidOperationException("Дождитесь окончания текущего анализа или файловой операции.");
+        if (sourceEventId <= 0 || targetEventId <= 0 || sourceEventId == targetEventId)
+            throw new ArgumentException("Некорректные события для объединения.");
+
+        var source = EventGroups.FirstOrDefault(x => x.Id == sourceEventId)
+            ?? throw new InvalidOperationException("Исходное событие больше не существует.");
+        var target = EventGroups.FirstOrDefault(x => x.Id == targetEventId)
+            ?? throw new InvalidOperationException("Целевое событие больше не существует.");
+        var targetName = target.DisplayName;
+
+        IsFileOperationRunning = true;
+        try
+        {
+            await _database.MergeEventsAsync(sourceEventId, targetEventId, targetName);
+            await LoadEventsAsync(targetEventId);
+            StatusText = $"Событие «{source.DisplayName}» объединено с «{targetName}». Оставлено имя целевого события. Файлы на диске не изменялись.";
+            OrganizationPlan.Clear();
+            OrganizationSummaryText = "События объединены — preview организации нужно построить заново.";
+            RaiseOrganizationCommands();
+        }
+        finally
+        {
+            IsFileOperationRunning = false;
+        }
     }
 
     public async Task MoveEventPhotosAsync(long sourceEventId, long targetEventId, IReadOnlyCollection<long> fileIds)
@@ -2327,14 +2726,25 @@ public sealed class MainViewModel : ObservableObject
 
         var sourceName = EventGroups.FirstOrDefault(x => x.Id == sourceEventId)?.DisplayName ?? "исходное событие";
         var targetName = EventGroups.FirstOrDefault(x => x.Id == targetEventId)?.DisplayName ?? "целевое событие";
-        var result = await _database.MoveEventPhotosAsync(sourceEventId, targetEventId, ids);
-        if (result.Moved <= 0)
-            throw new InvalidOperationException("Ни одна из выбранных фотографий больше не принадлежит исходному событию.");
+        IsFileOperationRunning = true;
+        try
+        {
+            var result = await _database.MoveEventPhotosAsync(sourceEventId, targetEventId, ids);
+            if (result.Moved <= 0)
+                throw new InvalidOperationException("Ни одна из выбранных фотографий больше не принадлежит исходному событию.");
 
-        await LoadEventsAsync(targetEventId);
-        StatusText = result.SourceDeleted
-            ? $"Перенесено фото: {result.Moved:N0} · «{sourceName}» опустело и удалено только из каталога · цель: «{targetName}»."
-            : $"Перенесено фото: {result.Moved:N0} · «{sourceName}» → «{targetName}». Файлы на диске не изменялись.";
+            await LoadEventsAsync(targetEventId);
+            StatusText = result.SourceDeleted
+                ? $"Перенесено фото: {result.Moved:N0} · «{sourceName}» опустело и удалено только из каталога · цель: «{targetName}»."
+                : $"Перенесено фото: {result.Moved:N0} · «{sourceName}» → «{targetName}». Файлы на диске не изменялись.";
+            OrganizationPlan.Clear();
+            OrganizationSummaryText = "Назначения событий изменились — preview организации нужно построить заново.";
+            RaiseOrganizationCommands();
+        }
+        finally
+        {
+            IsFileOperationRunning = false;
+        }
     }
 
     private async Task ShowSelectedEventPhotosAsync()
@@ -2344,8 +2754,7 @@ public sealed class MainViewModel : ObservableObject
         SearchText = "";
         SelectedYear = "Все";
         SelectedCamera = "Все";
-        ShowFavoritesOnly = false;
-        SelectedMinRating = 0;
+        SelectedReviewFilter = ReviewAll;
         SelectedSource = null;
         _personFilterId = null;
         _personFilterName = "";
@@ -2391,6 +2800,7 @@ public sealed class MainViewModel : ObservableObject
             OrganizationProgressText = "Анализ путей без изменения файлов…";
             var plan = await _organizationService.BuildPlanAsync(
                 OrganizationDestinationRoot,
+                SelectedOrganizationLayoutMode,
                 OrganizationUseFallbackDates,
                 OrganizationIncludeDateInFileName,
                 OrganizationIncludeNamedPeopleInFileName);
@@ -2415,7 +2825,7 @@ public sealed class MainViewModel : ObservableObject
             var already = plan.Count(x => x.IsAlreadyCorrect);
             var renamed = plan.Count(x => x.WasAutoRenamed);
             var bytes = plan.Where(x => x.IsSelected).Sum(x => x.FileSize);
-            OrganizationSummaryText = $"Preview: всего {plan.Count:N0} · можно выполнить {ready:N0} · выбрано {selected:N0} ({ByteFormatter.Format(bytes)}) · без достоверной даты {review:N0} · уже на месте {already:N0} · безопасно переименовано из-за конфликтов {renamed:N0}.";
+            OrganizationSummaryText = $"{SelectedOrganizationLayout}. Preview: всего {plan.Count:N0} · можно выполнить {ready:N0} · выбрано {selected:N0} ({ByteFormatter.Format(bytes)}) · без достоверной даты {review:N0} · уже на месте {already:N0} · безопасно переименовано из-за конфликтов {renamed:N0}.";
             OrganizationProgressText = "Это только preview. Файлы не перемещались.";
             StatusText = "План организации построен. Проверьте БЫЛО → СТАНЕТ и только потом запускайте выполнение.";
         }
@@ -2463,9 +2873,15 @@ public sealed class MainViewModel : ObservableObject
 
         var bytes = selected.Sum(x => x.FileSize);
         var untrusted = selected.Count(x => !x.HasTrustedDate);
+        var executedLayout = SelectedOrganizationLayout;
+        var executedWasQuickLayout = !OrganizationIsFullLayout;
+        var executedDestinationRoot = selected[0].DestinationRoot;
+        OrganizationBatchResult? completedResult = null;
+
         var first = MessageBox.Show(
             $"PAM физически переместит {selected.Count:N0} файлов ({ByteFormatter.Format(bytes)}) по показанным в preview путям.\n\n" +
             (untrusted > 0 ? $"ВНИМАНИЕ: вручную выбрано {untrusted:N0} файлов без достоверной даты.\n\n" : "") +
+            $"Режим: {executedLayout}.\n\n" +
             "Каждый файл проверяется SHA-256. Ничего не перезаписывается. Операции записываются в журнал и имеют Undo.\n\nПродолжить?",
             "Выполнить план организации", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
         if (first != MessageBoxResult.Yes) return;
@@ -2489,14 +2905,14 @@ public sealed class MainViewModel : ObservableObject
 
         try
         {
-            var result = await _organizationService.ExecuteAsync(selected, progress);
-            StatusText = result.Failed == 0
-                ? $"Организация завершена: перемещено {result.Succeeded:N0} файлов ({ByteFormatter.Format(result.BytesMoved)})."
-                : $"Организация завершена: успешно {result.Succeeded:N0}, ошибок {result.Failed:N0}.";
-            if (result.Errors.Count > 0)
+            completedResult = await _organizationService.ExecuteAsync(selected, progress);
+            StatusText = completedResult.Failed == 0
+                ? $"Организация завершена: перемещено {completedResult.Succeeded:N0} файлов ({ByteFormatter.Format(completedResult.BytesMoved)})."
+                : $"Организация завершена: успешно {completedResult.Succeeded:N0}, ошибок {completedResult.Failed:N0}.";
+            if (completedResult.Errors.Count > 0)
             {
-                var details = string.Join("\n", result.Errors.Take(10));
-                if (result.Errors.Count > 10) details += $"\n…ещё {result.Errors.Count - 10:N0}. Подробности в логе.";
+                var details = string.Join("\n", completedResult.Errors.Take(10));
+                if (completedResult.Errors.Count > 10) details += $"\n…ещё {completedResult.Errors.Count - 10:N0}. Подробности в логе.";
                 MessageBox.Show(details, "Часть файлов не перемещена", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
@@ -2524,7 +2940,35 @@ public sealed class MainViewModel : ObservableObject
             await LoadOrganizationHistoryAsync();
             RaiseOrganizationCommands();
         }
+
+        if (completedResult is { Succeeded: > 0 } && executedWasQuickLayout)
+        {
+            var followUp = MessageBox.Show(
+                $"Быстрая раскладка «{executedLayout}» закончена.\n\n" +
+                $"Новый корень:\n{executedDestinationRoot}\n\n" +
+                "Взять получившуюся структуру за основу дальнейшей сортировки?\n\n" +
+                "ДА — переключить режим на полную организацию и сразу построить новый Preview в этом же корне.\n" +
+                "НЕТ — оставить быструю раскладку как итоговую структуру.\n\n" +
+                "Дополнительные копии фотографий PAM при этом не создаёт: это тот же безопасный перенос с SHA-256 и Undo.",
+                "Продолжить сортировку?",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.No);
+
+            if (followUp == MessageBoxResult.Yes)
+            {
+                SelectedOrganizationLayout = OrganizationLayoutFull;
+                OrganizationDestinationRoot = executedDestinationRoot;
+                await BuildOrganizationPlanAsync();
+                StatusText = "Быстрая раскладка принята за основу. Построен Preview полной организации; файлы пока больше не перемещались.";
+            }
+            else
+            {
+                OrganizationSummaryText = $"Быстрая раскладка «{executedLayout}» оставлена как итоговая структура. Для следующего этапа можно выбрать режим «{OrganizationLayoutFull}» и построить Preview в том же корне.";
+            }
+        }
     }
+
 
     private async Task LoadOrganizationHistoryAsync()
     {
@@ -2568,152 +3012,13 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private static string BuildReviewStatus(int count, int index, bool isProcessed)
-    {
-        if (count <= 0 || index < 0) return "Нет группы для review";
-        return $"{index + 1:N0} из {count:N0} · " + (isProcessed ? "обработано" : "не обработано");
-    }
-
-    private bool CanMoveReview(int count, int index) => CanPerformCatalogReview && count > 1 && index >= 0;
-
-    private async Task LoadReviewStatesAsync()
-    {
-        _reviewedExactDuplicates = await _database.GetProcessedReviewKeysAsync(ReviewExactDuplicates);
-        _reviewedVisualDuplicates = await _database.GetProcessedReviewKeysAsync(ReviewVisualDuplicates);
-        _reviewedBursts = await _database.GetProcessedReviewKeysAsync(ReviewBursts);
-        _reviewedPeople = await _database.GetProcessedReviewKeysAsync(ReviewPeople);
-        _reviewedEvents = await _database.GetProcessedReviewKeysAsync(ReviewEvents);
-        LatestFaceIgnoreAction = await _database.GetLatestActiveFaceIgnoreActionAsync();
-        NotifyDuplicateReviewChanged();
-        NotifyVisualReviewChanged();
-        NotifyBurstReviewChanged();
-        NotifyPeopleReviewChanged();
-        NotifyEventReviewChanged();
-    }
-
-    private void MoveDuplicateReview(int direction) => SelectedDuplicateGroup = MoveSelection(DuplicateGroups, SelectedDuplicateGroup, direction);
-    private void MoveVisualReview(int direction) => SelectedVisualDuplicateGroup = MoveSelection(VisualDuplicateGroups, SelectedVisualDuplicateGroup, direction);
-    private void MoveBurstReview(int direction) => SelectedBurstGroup = MoveSelection(BurstGroups, SelectedBurstGroup, direction);
-    private void MovePeopleReview(int direction) => SelectedPersonGroup = MoveSelection(PersonGroups, SelectedPersonGroup, direction);
-    private void MoveEventReview(int direction) => SelectedEventGroup = MoveSelection(EventGroups, SelectedEventGroup, direction);
-
-    private static T? MoveSelection<T>(IList<T> items, T? current, int direction) where T : class
-    {
-        if (items.Count == 0) return null;
-        var index = current is null ? -1 : items.IndexOf(current);
-        if (index < 0) index = 0;
-        index = (index + direction + items.Count) % items.Count;
-        return items[index];
-    }
-
-    private static T? FindNextUnreviewed<T>(IList<T> items, T current, Func<T, string> keySelector, HashSet<string> reviewed) where T : class
-    {
-        if (items.Count < 2) return null;
-        var start = items.IndexOf(current);
-        if (start < 0) return null;
-        for (var step = 1; step < items.Count; step++)
-        {
-            var candidate = items[(start + step) % items.Count];
-            if (!reviewed.Contains(keySelector(candidate))) return candidate;
-        }
-        return null;
-    }
-
-    private async Task ToggleDuplicateReviewedAsync()
-    {
-        var group = SelectedDuplicateGroup;
-        if (group is null) return;
-        var processed = !_reviewedExactDuplicates.Contains(group.Sha256);
-        await _database.SetReviewProcessedAsync(ReviewExactDuplicates, group.Sha256, processed);
-        if (processed) _reviewedExactDuplicates.Add(group.Sha256); else _reviewedExactDuplicates.Remove(group.Sha256);
-        NotifyDuplicateReviewChanged();
-        StatusText = processed ? "Группа точных дублей отмечена как обработанная." : "С группы точных дублей снята отметка «обработано».";
-        if (processed && FindNextUnreviewed(DuplicateGroups, group, x => x.Sha256, _reviewedExactDuplicates) is { } next) SelectedDuplicateGroup = next;
-    }
-
-    private async Task ToggleVisualReviewedAsync()
-    {
-        var group = SelectedVisualDuplicateGroup;
-        if (group is null) return;
-        var processed = !_reviewedVisualDuplicates.Contains(group.GroupKey);
-        await _database.SetReviewProcessedAsync(ReviewVisualDuplicates, group.GroupKey, processed);
-        if (processed) _reviewedVisualDuplicates.Add(group.GroupKey); else _reviewedVisualDuplicates.Remove(group.GroupKey);
-        NotifyVisualReviewChanged();
-        StatusText = processed ? "Визуальная группа отмечена как обработанная." : "С визуальной группы снята отметка «обработано».";
-        if (processed && FindNextUnreviewed(VisualDuplicateGroups, group, x => x.GroupKey, _reviewedVisualDuplicates) is { } next) SelectedVisualDuplicateGroup = next;
-    }
-
-    private async Task ToggleBurstReviewedAsync()
-    {
-        var group = SelectedBurstGroup;
-        if (group is null) return;
-        var processed = !_reviewedBursts.Contains(group.GroupKey);
-        await _database.SetReviewProcessedAsync(ReviewBursts, group.GroupKey, processed);
-        if (processed) _reviewedBursts.Add(group.GroupKey); else _reviewedBursts.Remove(group.GroupKey);
-        NotifyBurstReviewChanged();
-        StatusText = processed ? "Серия отмечена как обработанная." : "С серии снята отметка «обработано».";
-        if (processed && FindNextUnreviewed(BurstGroups, group, x => x.GroupKey, _reviewedBursts) is { } next) SelectedBurstGroup = next;
-    }
-
-    private async Task TogglePersonReviewedAsync()
-    {
-        var group = SelectedPersonGroup;
-        if (group is null) return;
-        var key = group.Id.ToString();
-        var processed = !_reviewedPeople.Contains(key);
-        await _database.SetReviewProcessedAsync(ReviewPeople, key, processed);
-        if (processed) _reviewedPeople.Add(key); else _reviewedPeople.Remove(key);
-        NotifyPeopleReviewChanged();
-        StatusText = processed ? $"Группа «{group.DisplayName}» отмечена как обработанная." : $"С группы «{group.DisplayName}» снята отметка «обработано».";
-        if (processed && FindNextUnreviewed(PersonGroups, group, x => x.Id.ToString(), _reviewedPeople) is { } next) SelectedPersonGroup = next;
-    }
-
-    private async Task ToggleEventReviewedAsync()
-    {
-        var group = SelectedEventGroup;
-        if (group is null) return;
-        var key = group.Id.ToString();
-        var processed = !_reviewedEvents.Contains(key);
-        await _database.SetReviewProcessedAsync(ReviewEvents, key, processed);
-        if (processed) _reviewedEvents.Add(key); else _reviewedEvents.Remove(key);
-        NotifyEventReviewChanged();
-        StatusText = processed ? $"Событие «{group.DisplayName}» отмечено как обработанное." : $"Со события «{group.DisplayName}» снята отметка «обработано».";
-        if (processed && FindNextUnreviewed(EventGroups, group, x => x.Id.ToString(), _reviewedEvents) is { } next) SelectedEventGroup = next;
-    }
-
-    private void NotifyDuplicateReviewChanged()
-    {
-        OnPropertyChanged(nameof(DuplicateReviewStatusText)); OnPropertyChanged(nameof(DuplicateReviewActionText));
-        PreviousDuplicateGroupCommand?.RaiseCanExecuteChanged(); NextDuplicateGroupCommand?.RaiseCanExecuteChanged(); ToggleDuplicateReviewedCommand?.RaiseCanExecuteChanged();
-    }
-    private void NotifyVisualReviewChanged()
-    {
-        OnPropertyChanged(nameof(VisualReviewStatusText)); OnPropertyChanged(nameof(VisualReviewActionText));
-        PreviousVisualGroupCommand?.RaiseCanExecuteChanged(); NextVisualGroupCommand?.RaiseCanExecuteChanged(); ToggleVisualReviewedCommand?.RaiseCanExecuteChanged();
-    }
-    private void NotifyBurstReviewChanged()
-    {
-        OnPropertyChanged(nameof(BurstReviewStatusText)); OnPropertyChanged(nameof(BurstReviewActionText));
-        PreviousBurstGroupCommand?.RaiseCanExecuteChanged(); NextBurstGroupCommand?.RaiseCanExecuteChanged(); ToggleBurstReviewedCommand?.RaiseCanExecuteChanged();
-    }
-    private void NotifyPeopleReviewChanged()
-    {
-        OnPropertyChanged(nameof(PeopleReviewStatusText)); OnPropertyChanged(nameof(PeopleReviewActionText));
-        PreviousPersonGroupCommand?.RaiseCanExecuteChanged(); NextPersonGroupCommand?.RaiseCanExecuteChanged(); TogglePersonReviewedCommand?.RaiseCanExecuteChanged();
-    }
-    private void NotifyEventReviewChanged()
-    {
-        OnPropertyChanged(nameof(EventReviewStatusText)); OnPropertyChanged(nameof(EventReviewActionText));
-        PreviousEventGroupCommand?.RaiseCanExecuteChanged(); NextEventGroupCommand?.RaiseCanExecuteChanged(); ToggleEventReviewedCommand?.RaiseCanExecuteChanged();
-    }
-
     private async Task RefreshAllAsync()
     {
-        // Review flags must be available before group lists are materialized. Sources and
-        // filter values also define the photo query. Everything else below is read-only and
-        // independent, so overlap the SQLite reads instead of serializing startup/refresh.
-        await LoadReviewStatesAsync();
+        // Sources and filter values define the photo query. The latest reversible face-ignore
+        // action is independent, so load it alongside the other read-only startup state.
+        var latestFaceIgnoreTask = _database.GetLatestActiveFaceIgnoreActionAsync();
         await Task.WhenAll(LoadSourcesAsync(), LoadFilterValuesAsync());
+        LatestFaceIgnoreAction = await latestFaceIgnoreTask;
 
         await Task.WhenAll(
             LoadPhotosAsync(reset: true),
@@ -2760,36 +3065,6 @@ public sealed class MainViewModel : ObservableObject
         Cameras.Add("Все");
         foreach (var camera in await camerasTask) Cameras.Add(camera);
         SelectedCamera = Cameras.Contains(oldCamera) ? oldCamera : "Все";
-    }
-
-    private async Task ToggleSelectedFavoriteAsync()
-    {
-        var photo = SelectedPhoto;
-        if (photo is null) return;
-        var next = !photo.IsFavorite;
-        await _database.SetPhotoFavoriteAsync(photo.Id, next);
-        photo.IsFavorite = next;
-        var timelineMatch = TimelinePhotos.FirstOrDefault(x => x.Id == photo.Id);
-        if (timelineMatch is not null) timelineMatch.IsFavorite = next;
-        StatusText = next ? $"«{photo.FileName}» добавлено в избранное." : $"«{photo.FileName}» убрано из избранного.";
-        if (ShowFavoritesOnly && !next)
-            await LoadPhotosAsync(reset: true);
-        await LoadTimelineAsync(preserveSelection: true);
-    }
-
-    public async Task SetSelectedPhotoRatingAsync(int rating)
-    {
-        var photo = SelectedPhoto;
-        if (photo is null || !CanPerformCatalogReview) return;
-        rating = Math.Clamp(rating, 0, 5);
-        await _database.SetPhotoRatingAsync(photo.Id, rating);
-        photo.Rating = rating;
-        var timelineMatch = TimelinePhotos.FirstOrDefault(x => x.Id == photo.Id);
-        if (timelineMatch is not null) timelineMatch.Rating = rating;
-        StatusText = rating == 0 ? $"Рейтинг «{photo.FileName}» сброшен." : $"«{photo.FileName}»: рейтинг {rating}/5.";
-        if (SelectedMinRating > rating)
-            await LoadPhotosAsync(reset: true);
-        await LoadTimelineAsync(preserveSelection: true);
     }
 
     private async Task LoadTimelineAsync(bool preserveSelection = true)
@@ -2869,7 +3144,7 @@ public sealed class MainViewModel : ObservableObject
         var photo = SelectedPhoto;
         if (photo is null) return;
 
-        var initialDate = DateTime.TryParse(photo.CaptureDate, out var parsed) ? parsed : DateTime.Today;
+        var initialDate = StoredDateTime.TryParse(photo.CaptureDate, out var parsed) ? parsed : DateTime.Today;
         var dialog = new CaptureDateEditorWindow(initialDate, photo.CaptureDateSource)
         {
             Owner = Application.Current?.MainWindow
@@ -2983,6 +3258,7 @@ public sealed class MainViewModel : ObservableObject
 
         DuplicateGroups.Clear();
         foreach (var group in groups) DuplicateGroups.Add(group);
+        RebuildDuplicateFolderGroups();
 
         SelectedDuplicateGroup = DuplicateGroups.FirstOrDefault(x => x.Sha256 == selectedHash) ?? DuplicateGroups.FirstOrDefault();
 
@@ -2997,52 +3273,484 @@ public sealed class MainViewModel : ObservableObject
               $"лишних точных копий: {extraCopies:N0} · потенциально освободится: {ByteFormatter.Format(wastedBytes)}";
     }
 
-    private async Task QuarantineOtherCopiesAsync()
+    private void RebuildDuplicateFolderGroups()
     {
-        var group = SelectedDuplicateGroup;
-        var keeper = SelectedDuplicateFile;
-        if (group is null || keeper is null || group.Files.Count < 2) return;
+        var folders = new Dictionary<string, DuplicateFolderAccumulator>(StringComparer.OrdinalIgnoreCase);
 
-        var count = group.Files.Count - 1;
-        var bytes = group.FileSize * count;
+        foreach (var group in DuplicateGroups)
+        {
+            var byFolder = group.Files
+                .Select(file => (File: file, Folder: GetContainingFolder(file.FullPath)))
+                .Where(x => !string.IsNullOrWhiteSpace(x.Folder))
+                .GroupBy(x => x.Folder, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.Select(y => y.File).ToList(), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var pair in byFolder)
+            {
+                if (!folders.TryGetValue(pair.Key, out var accumulator))
+                {
+                    accumulator = new DuplicateFolderAccumulator(pair.Key);
+                    folders[pair.Key] = accumulator;
+                }
+
+                var inside = pair.Value;
+                var outsideCount = Math.Max(0, group.FileCount - inside.Count);
+                accumulator.ExactSetCount++;
+                accumulator.DuplicateFileCount += inside.Count;
+                accumulator.InternalExtraCount += Math.Max(0, inside.Count - 1);
+                if (outsideCount == 0) accumulator.RequiredKeeperCount++;
+
+                var removableHere = outsideCount > 0 ? inside.Count : Math.Max(0, inside.Count - 1);
+                accumulator.RemovableFromFolderCount += removableHere;
+                accumulator.RemovableFromFolderBytes += group.FileSize * removableHere;
+                accumulator.RemovableElsewhereCount += outsideCount;
+                accumulator.RemovableElsewhereBytes += group.FileSize * outsideCount;
+
+                foreach (var other in byFolder)
+                {
+                    if (string.Equals(other.Key, pair.Key, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!accumulator.Matches.TryGetValue(other.Key, out var match))
+                    {
+                        match = new DuplicateFolderMatchAccumulator(other.Key);
+                        accumulator.Matches[other.Key] = match;
+                    }
+                    match.SharedSetCount++;
+                    match.SelectedCopyCount += inside.Count;
+                    match.SelectedBytes += group.FileSize * inside.Count;
+                    match.OtherCopyCount += other.Value.Count;
+                    match.OtherBytes += group.FileSize * other.Value.Count;
+                }
+            }
+        }
+
+        var items = folders.Values
+            .Select(x => new DuplicateFolderItem
+            {
+                FolderPath = x.FolderPath,
+                ExactSetCount = x.ExactSetCount,
+                DuplicateFileCount = x.DuplicateFileCount,
+                RemovableFromFolderCount = x.RemovableFromFolderCount,
+                RemovableFromFolderBytes = x.RemovableFromFolderBytes,
+                RemovableElsewhereCount = x.RemovableElsewhereCount,
+                RemovableElsewhereBytes = x.RemovableElsewhereBytes,
+                OtherFolderCount = x.Matches.Count,
+                InternalExtraCount = x.InternalExtraCount,
+                RequiredKeeperCount = x.RequiredKeeperCount,
+                Matches = x.Matches.Values
+                    .OrderByDescending(m => m.SelectedBytes + m.OtherBytes)
+                    .ThenBy(m => m.OtherFolderPath, StringComparer.OrdinalIgnoreCase)
+                    .Select(m => new DuplicateFolderMatchItem
+                    {
+                        OtherFolderPath = m.OtherFolderPath,
+                        SharedSetCount = m.SharedSetCount,
+                        SelectedCopyCount = m.SelectedCopyCount,
+                        SelectedBytes = m.SelectedBytes,
+                        OtherCopyCount = m.OtherCopyCount,
+                        OtherBytes = m.OtherBytes
+                    })
+                    .ToList()
+            })
+            .OrderByDescending(x => x.RemovableFromFolderBytes)
+            .ThenByDescending(x => x.RemovableFromFolderCount)
+            .ThenBy(x => x.FolderPath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        DuplicateFolderGroups.Clear();
+        foreach (var item in items) DuplicateFolderGroups.Add(item);
+        RebuildDuplicateFolderIntersections();
+    }
+
+    private void RebuildDuplicateFolderIntersections()
+    {
+        var selectedKey = SelectedDuplicateFolderIntersection?.PairKey;
+        var lookup = DuplicateFolderGroups.ToDictionary(x => x.FolderPath, StringComparer.OrdinalIgnoreCase);
+        var raw = new List<DuplicateFolderIntersectionItem>();
+
+        foreach (var left in DuplicateFolderGroups)
+        {
+            foreach (var match in left.Matches)
+            {
+                if (StringComparer.OrdinalIgnoreCase.Compare(left.FolderPath, match.OtherFolderPath) >= 0) continue;
+                if (!lookup.TryGetValue(match.OtherFolderPath, out var right)) continue;
+
+                raw.Add(new DuplicateFolderIntersectionItem
+                {
+                    FolderAPath = left.FolderPath,
+                    FolderBPath = right.FolderPath,
+                    SharedSetCount = match.SharedSetCount,
+                    ACopyCount = match.SelectedCopyCount,
+                    ABytes = match.SelectedBytes,
+                    BCopyCount = match.OtherCopyCount,
+                    BBytes = match.OtherBytes,
+                    ATotalDuplicateSetCount = left.ExactSetCount,
+                    BTotalDuplicateSetCount = right.ExactSetCount
+                });
+            }
+        }
+
+        var sorted = raw
+            .Where(x => !ShowOnlyCompleteDuplicateFolderPairs || x.CanFullyClearEitherSide)
+            .OrderByDescending(x => x.MaxRemovableBytes)
+            .ThenByDescending(x => x.SharedSetCount)
+            .ThenBy(x => x.FolderAPath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.FolderBPath, StringComparer.OrdinalIgnoreCase)
+            .Select((x, index) => new DuplicateFolderIntersectionItem
+            {
+                DisplayNumber = index + 1,
+                FolderAPath = x.FolderAPath,
+                FolderBPath = x.FolderBPath,
+                SharedSetCount = x.SharedSetCount,
+                ACopyCount = x.ACopyCount,
+                ABytes = x.ABytes,
+                BCopyCount = x.BCopyCount,
+                BBytes = x.BBytes,
+                ATotalDuplicateSetCount = x.ATotalDuplicateSetCount,
+                BTotalDuplicateSetCount = x.BTotalDuplicateSetCount
+            })
+            .ToList();
+
+        DuplicateFolderIntersections.Clear();
+        foreach (var pair in sorted) DuplicateFolderIntersections.Add(pair);
+
+        SelectedDuplicateFolderIntersection = DuplicateFolderIntersections.FirstOrDefault(x =>
+                                                string.Equals(x.PairKey, selectedKey, StringComparison.OrdinalIgnoreCase))
+                                            ?? DuplicateFolderIntersections.FirstOrDefault();
+    }
+
+    private void RebuildDuplicateFolderPairRows()
+    {
+        DuplicateFolderPairRows.Clear();
+
+        var leftFolder = SelectedDuplicateFolderIntersection?.FolderAPath;
+        var rightFolder = SelectedDuplicateFolderIntersection?.FolderBPath;
+        if (string.IsNullOrWhiteSpace(leftFolder) || string.IsNullOrWhiteSpace(rightFolder))
+        {
+            OnPropertyChanged(nameof(DuplicatePairSummaryText));
+            OnPropertyChanged(nameof(DuplicatePairSelectionText));
+            return;
+        }
+
+        var leftNormalized = NormalizeFolderPath(leftFolder);
+        var rightNormalized = NormalizeFolderPath(rightFolder);
+        var rows = new List<DuplicateFolderPairItem>();
+
+        foreach (var group in DuplicateGroups)
+        {
+            var leftFiles = group.Files
+                .Where(x => string.Equals(GetContainingFolder(x.FullPath), leftNormalized, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x.FileName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.FullPath, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (leftFiles.Count == 0) continue;
+
+            var rightFiles = group.Files
+                .Where(x => string.Equals(GetContainingFolder(x.FullPath), rightNormalized, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x.FileName, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.FullPath, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (rightFiles.Count == 0) continue;
+
+            rows.Add(new DuplicateFolderPairItem
+            {
+                Sha256 = group.Sha256,
+                FileSize = group.FileSize,
+                LeftCopyCount = leftFiles.Count,
+                RightCopyCount = rightFiles.Count,
+                LeftFilesText = FormatDuplicatePairFiles(leftFiles),
+                RightFilesText = FormatDuplicatePairFiles(rightFiles)
+            });
+        }
+
+        foreach (var row in rows
+                     .OrderByDescending(x => x.FileSize * (x.LeftCopyCount + x.RightCopyCount))
+                     .ThenBy(x => x.LeftFilesText, StringComparer.OrdinalIgnoreCase))
+            DuplicateFolderPairRows.Add(row);
+
+        OnPropertyChanged(nameof(DuplicatePairSummaryText));
+        OnPropertyChanged(nameof(DuplicatePairSelectionText));
+        QuarantineDuplicateFolderPairSideCommand?.RaiseCanExecuteChanged();
+    }
+
+    private static string FormatDuplicatePairFiles(IReadOnlyList<DuplicateFileItem> files)
+    {
+        const int maxShown = 4;
+        var names = files.Take(maxShown).Select(x => x.FileName).ToList();
+        if (files.Count > maxShown) names.Add($"+ ещё {files.Count - maxShown:N0}");
+        return string.Join(Environment.NewLine, names);
+    }
+
+    private List<(DuplicateGroupItem Group, DuplicateFileItem Keeper, IReadOnlyList<DuplicateFileItem> Candidates)> BuildDuplicateFolderPairCleanupPlan(
+        string leftFolderPath,
+        string rightFolderPath,
+        bool removeLeft)
+    {
+        var leftNormalized = NormalizeFolderPath(leftFolderPath);
+        var rightNormalized = NormalizeFolderPath(rightFolderPath);
+        var result = new List<(DuplicateGroupItem Group, DuplicateFileItem Keeper, IReadOnlyList<DuplicateFileItem> Candidates)>();
+
+        foreach (var group in DuplicateGroups)
+        {
+            var leftFiles = group.Files
+                .Where(x => string.Equals(GetContainingFolder(x.FullPath), leftNormalized, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x.FullPath, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (leftFiles.Count == 0) continue;
+
+            var rightFiles = group.Files
+                .Where(x => string.Equals(GetContainingFolder(x.FullPath), rightNormalized, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(x => x.FullPath, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (rightFiles.Count == 0) continue;
+
+            var keeper = removeLeft ? rightFiles[0] : leftFiles[0];
+            IReadOnlyList<DuplicateFileItem> candidates = removeLeft ? leftFiles : rightFiles;
+            result.Add((group, keeper, candidates));
+        }
+
+        return result;
+    }
+
+    private async Task QuarantineSelectedDuplicateFolderPairSideAsync()
+    {
+        var pair = SelectedDuplicateFolderIntersection;
+        if (pair is null) return;
+
+        var removeLeft = RemoveDuplicatePairFromLeft;
+        var deleteDirectly = DeleteExactDuplicatesDirectly;
+        var plan = BuildDuplicateFolderPairCleanupPlan(pair.FolderAPath, pair.FolderBPath, removeLeft);
+        var count = plan.Sum(x => x.Candidates.Count);
+        var bytes = plan.Sum(x => x.Candidates.Sum(file => file.FileSize));
+        if (count == 0)
+        {
+            MessageBox.Show(
+                deleteDirectly ? "У выбранной пары папок больше нет точных совпадений для удаления." : "У выбранной пары папок больше нет точных совпадений для карантина.",
+                "Сравнение папок A ↔ B", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var source = removeLeft ? pair.FolderAPath : pair.FolderBPath;
+        var keeperFolder = removeLeft ? pair.FolderBPath : pair.FolderAPath;
+        var side = removeLeft ? "A" : "B";
+        var actionText = deleteDirectly ? "БЕЗВОЗВРАТНО УДАЛИТЬ" : "Отправить в карантин";
+        var safetyText = deleteDirectly
+            ? "КАРАНТИН И UNDO НЕ ИСПОЛЬЗУЮТСЯ. Перед каждым удалением PAM заново проверяет полный SHA-256 и удерживает проверенную сохраняемую копию открытой, чтобы она не могла исчезнуть во время операции."
+            : "Перед каждым переносом PAM повторно проверяет сохраняемую и удаляемую копии; операция обратима через Undo.";
+
         var answer = MessageBox.Show(
-            $"Оставить этот файл:\n{keeper.FullPath}\n\n" +
-            $"А остальные точные копии ({count:N0}, {ByteFormatter.Format(bytes)}) переместить в безопасный карантин?\n\n" +
-            "Перед каждой операцией SHA-256 будет пересчитан. Окончательного удаления здесь нет — всё можно вернуть через Undo.",
-            "Подтвердить карантин точных дублей",
+            $"Пара папок A ↔ B подтверждена полным SHA-256.\n\n" +
+            $"{actionText} ВСЕ совпадающие файлы со стороны {side}:\n{source}\n\n" +
+            $"Файлов: {count:N0} · {ByteFormatter.Format(bytes)}\n\n" +
+            $"Сохраняемая сторона:\n{keeperFolder}\n\n" +
+            "Затрагиваются только SHA-256, присутствующие одновременно в обеих выбранных папках. Другие файлы и другие папки не трогаются.\n\n" +
+            safetyText,
+            deleteDirectly ? "БЕЗВОЗВРАТНОЕ удаление стороны A ↔ B" : "Карантин выбранной стороны A ↔ B",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
 
+        await ExecuteDuplicateFolderCleanupPlanAsync(
+            plan,
+            deleteDirectly ? $"Удаление совпадений из стороны {side}…" : $"Карантин совпадений из стороны {side}…",
+            deleteDirectly);
+    }
+
+    private async Task ExecuteDuplicateFolderCleanupPlanAsync(
+        IReadOnlyList<(DuplicateGroupItem Group, DuplicateFileItem Keeper, IReadOnlyList<DuplicateFileItem> Candidates)> plan,
+        string progressText,
+        bool deleteDirectly)
+    {
+        var requested = plan.Sum(x => x.Candidates.Count);
+        var succeeded = 0;
+        long bytesProcessed = 0;
+        var errors = new List<string>();
+
         IsFileOperationRunning = true;
         try
         {
-            StatusText = "Проверка SHA-256 и перенос точных копий в карантин…";
-            var result = await _quarantineService.QuarantineAllExceptAsync(group, keeper);
-            if (result.Failed == 0)
+            StatusText = progressText;
+            for (var index = 0; index < plan.Count; index++)
             {
-                StatusText = $"В карантин перемещено {result.Succeeded:N0} файлов ({ByteFormatter.Format(result.BytesMoved)}).";
+                var item = plan[index];
+                StatusText = $"{progressText} Набор {index + 1:N0} из {plan.Count:N0}…";
+                try
+                {
+                    if (deleteDirectly)
+                    {
+                        var result = await _quarantineService.DeleteExactCandidatesPermanentlyAsync(item.Group, item.Keeper, item.Candidates);
+                        succeeded += result.Succeeded;
+                        bytesProcessed += result.BytesDeleted;
+                        errors.AddRange(result.Errors);
+                    }
+                    else
+                    {
+                        var result = await _quarantineService.QuarantineExactCandidatesAsync(item.Group, item.Keeper, item.Candidates);
+                        succeeded += result.Succeeded;
+                        bytesProcessed += result.BytesMoved;
+                        errors.AddRange(result.Errors);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.Error(deleteDirectly
+                        ? $"Folder duplicate group direct delete failed: {item.Group.HashShort}"
+                        : $"Folder duplicate group quarantine failed: {item.Group.HashShort}", ex);
+                    errors.Add($"Набор {item.Group.HashShort}: {ex.Message}");
+                }
+            }
+
+            if (errors.Count == 0)
+            {
+                StatusText = deleteDirectly
+                    ? $"Безвозвратно удалено {succeeded:N0} файлов ({ByteFormatter.Format(bytesProcessed)})."
+                    : $"В карантин перемещено {succeeded:N0} файлов ({ByteFormatter.Format(bytesProcessed)}).";
             }
             else
             {
-                StatusText = $"Карантин: успешно {result.Succeeded:N0}, ошибок {result.Failed:N0}.";
-                var details = string.Join("\n", result.Errors.Take(8));
-                if (result.Errors.Count > 8) details += $"\n…и ещё {result.Errors.Count - 8:N0}. Подробности есть в журнале.";
-                MessageBox.Show(details, "Не все файлы удалось переместить", MessageBoxButton.OK, MessageBoxImage.Warning);
+                StatusText = deleteDirectly
+                    ? $"Удаление: запрошено {requested:N0}, успешно {succeeded:N0}, ошибок {errors.Count:N0}."
+                    : $"Карантин: запрошено {requested:N0}, успешно {succeeded:N0}, ошибок {errors.Count:N0}.";
+                var details = string.Join("\n", errors.Take(8));
+                if (errors.Count > 8) details += $"\n…и ещё {errors.Count - 8:N0}. Подробности есть в журнале.";
+                MessageBox.Show(details, deleteDirectly ? "Не все файлы удалось удалить" : "Не все файлы удалось переместить", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
         catch (Exception ex)
         {
-            LoggingService.Error("Quarantine batch failed", ex);
-            StatusText = "Ошибка карантина: " + ex.Message;
-            MessageBox.Show(ex.Message, "Ошибка карантина", MessageBoxButton.OK, MessageBoxImage.Error);
+            LoggingService.Error(deleteDirectly ? "Folder duplicate direct delete failed" : "Folder duplicate quarantine failed", ex);
+            StatusText = (deleteDirectly ? "Ошибка удаления: " : "Ошибка карантина: ") + ex.Message;
+            MessageBox.Show(ex.Message, deleteDirectly ? "Ошибка безвозвратного удаления" : "Ошибка карантина", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
             IsFileOperationRunning = false;
             ClearVisualGroupsAfterLibraryChange();
             await LoadDuplicateGroupsAsync();
+            await LoadQuarantineAsync();
+            await LoadPhotosAsync(reset: true);
+            await LoadStatisticsAsync();
+            await LoadEventsAsync();
+        }
+    }
+
+    private void ShowSelectedDuplicateFolderInExplorer()
+    {
+        var folder = SelectedDuplicateFolderIntersection?.FolderAPath;
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return;
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+    }
+
+    private void ShowSelectedDuplicateFolderMatchInExplorer()
+    {
+        var folder = SelectedDuplicateFolderIntersection?.FolderBPath;
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return;
+        Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+    }
+
+    private static string GetContainingFolder(string fullPath)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(Path.GetFullPath(fullPath));
+            return string.IsNullOrWhiteSpace(directory) ? "" : NormalizeFolderPath(directory);
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static string NormalizeFolderPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(full);
+        var trimmed = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (!string.IsNullOrWhiteSpace(root) &&
+            string.Equals(trimmed, root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), StringComparison.OrdinalIgnoreCase))
+            return root;
+        return trimmed;
+    }
+
+    private async Task QuarantineOtherCopiesAsync()
+    {
+        var group = SelectedDuplicateGroup;
+        var keeper = SelectedDuplicateFile;
+        if (group is null || keeper is null || group.Files.Count < 2) return;
+
+        var deleteDirectly = DeleteExactDuplicatesDirectly;
+        var count = group.Files.Count - 1;
+        var bytes = group.FileSize * count;
+        var answer = MessageBox.Show(
+            $"Оставить этот файл:\n{keeper.FullPath}\n\n" +
+            (deleteDirectly
+                ? $"А остальные точные копии ({count:N0}, {ByteFormatter.Format(bytes)}) БЕЗВОЗВРАТНО УДАЛИТЬ?\n\n"
+                : $"А остальные точные копии ({count:N0}, {ByteFormatter.Format(bytes)}) переместить в безопасный карантин?\n\n") +
+            (deleteDirectly
+                ? "КАРАНТИН И UNDO НЕ ИСПОЛЬЗУЮТСЯ. PAM повторно проверит полный SHA-256 сохраняемой копии, удержит её от изменения на время операции и заново проверит каждый удаляемый файл непосредственно перед удалением."
+                : "Перед каждой операцией SHA-256 будет пересчитан. Файлы можно вернуть через Undo."),
+            deleteDirectly ? "БЕЗВОЗВРАТНО удалить точные копии" : "Подтвердить карантин точных дублей",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (answer != MessageBoxResult.Yes) return;
+
+        var currentIndex = DuplicateGroups.IndexOf(group);
+        var nextGroupHash = currentIndex >= 0 && DuplicateGroups.Count > 1
+            ? DuplicateGroups[(currentIndex + 1) % DuplicateGroups.Count].Sha256
+            : null;
+        var advanceAfterSuccess = false;
+
+        IsFileOperationRunning = true;
+        try
+        {
+            if (deleteDirectly)
+            {
+                StatusText = "Проверка SHA-256 и безвозвратное удаление точных копий…";
+                var result = await _quarantineService.DeleteAllExactCopiesExceptAsync(group, keeper);
+                advanceAfterSuccess = result.Failed == 0 && result.Succeeded > 0;
+                if (result.Failed == 0)
+                {
+                    StatusText = $"Безвозвратно удалено {result.Succeeded:N0} файлов ({ByteFormatter.Format(result.BytesDeleted)}).";
+                }
+                else
+                {
+                    StatusText = $"Удаление: успешно {result.Succeeded:N0}, ошибок {result.Failed:N0}.";
+                    var details = string.Join("\n", result.Errors.Take(8));
+                    if (result.Errors.Count > 8) details += $"\n…и ещё {result.Errors.Count - 8:N0}. Подробности есть в журнале.";
+                    MessageBox.Show(details, "Не все файлы удалось удалить", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            else
+            {
+                StatusText = "Проверка SHA-256 и перенос точных копий в карантин…";
+                var result = await _quarantineService.QuarantineAllExceptAsync(group, keeper);
+                advanceAfterSuccess = result.Failed == 0 && result.Succeeded > 0;
+                if (result.Failed == 0)
+                {
+                    StatusText = $"В карантин перемещено {result.Succeeded:N0} файлов ({ByteFormatter.Format(result.BytesMoved)}).";
+                }
+                else
+                {
+                    StatusText = $"Карантин: успешно {result.Succeeded:N0}, ошибок {result.Failed:N0}.";
+                    var details = string.Join("\n", result.Errors.Take(8));
+                    if (result.Errors.Count > 8) details += $"\n…и ещё {result.Errors.Count - 8:N0}. Подробности есть в журнале.";
+                    MessageBox.Show(details, "Не все файлы удалось переместить", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggingService.Error(deleteDirectly ? "Direct exact duplicate delete batch failed" : "Quarantine batch failed", ex);
+            StatusText = (deleteDirectly ? "Ошибка удаления: " : "Ошибка карантина: ") + ex.Message;
+            MessageBox.Show(ex.Message, deleteDirectly ? "Ошибка безвозвратного удаления" : "Ошибка карантина", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            IsFileOperationRunning = false;
+            ClearVisualGroupsAfterLibraryChange();
+            await LoadDuplicateGroupsAsync();
+            if (advanceAfterSuccess && nextGroupHash is not null)
+                SelectedDuplicateGroup = DuplicateGroups.FirstOrDefault(x => string.Equals(x.Sha256, nextGroupHash, StringComparison.OrdinalIgnoreCase)) ?? SelectedDuplicateGroup;
             await LoadQuarantineAsync();
             await LoadPhotosAsync(reset: true);
             await LoadStatisticsAsync();
@@ -3201,8 +3909,21 @@ public sealed class MainViewModel : ObservableObject
             SourceFolder = SelectedSource?.Path ?? "",
             PersonId = _personFilterId,
             EventId = _eventFilterId,
-            FavoriteOnly = ShowFavoritesOnly,
-            MinRating = SelectedMinRating,
+            ReviewFilter = SelectedReviewFilter switch
+            {
+                ReviewNeeds => PhotoReviewFilter.NeedsReview,
+                ReviewUntrustedDate => PhotoReviewFilter.UntrustedDate,
+                ReviewWithoutEvent => PhotoReviewFilter.WithoutEvent,
+                ReviewIndexError => PhotoReviewFilter.IndexError,
+                _ => PhotoReviewFilter.All
+            },
+            SortOrder = SelectedPhotoSort switch
+            {
+                SortDateAscending => PhotoSortOrder.CaptureDateAscending,
+                SortFileName => PhotoSortOrder.FileNameAscending,
+                SortFullPath => PhotoSortOrder.FullPathAscending,
+                _ => PhotoSortOrder.CaptureDateDescending
+            },
             Limit = PageSize,
             Offset = offset
         };
@@ -3213,8 +3934,8 @@ public sealed class MainViewModel : ObservableObject
         SearchText = "";
         SelectedYear = "Все";
         SelectedCamera = "Все";
-        ShowFavoritesOnly = false;
-        SelectedMinRating = 0;
+        SelectedReviewFilter = ReviewAll;
+        SelectedPhotoSort = SortDateDescending;
         SelectedSource = null;
         _personFilterId = null;
         _personFilterName = "";
@@ -3321,7 +4042,6 @@ public sealed class MainViewModel : ObservableObject
         PermanentDeleteQuarantineCommand.RaiseCanExecuteChanged();
         EditPhotoCaptureDateCommand.RaiseCanExecuteChanged();
         ResetPhotoCaptureDateCommand.RaiseCanExecuteChanged();
-        ToggleFavoriteCommand.RaiseCanExecuteChanged();
     }
 
     private void RaiseViewerCommands()
@@ -3330,7 +4050,6 @@ public sealed class MainViewModel : ObservableObject
         OpenPhotoCommand.RaiseCanExecuteChanged();
         EditPhotoCaptureDateCommand.RaiseCanExecuteChanged();
         ResetPhotoCaptureDateCommand.RaiseCanExecuteChanged();
-        ToggleFavoriteCommand.RaiseCanExecuteChanged();
     }
 
     private void RaiseDuplicateCommands()
@@ -3341,9 +4060,9 @@ public sealed class MainViewModel : ObservableObject
         StopDuplicateAnalysisCommand.RaiseCanExecuteChanged();
         RefreshDuplicatesCommand.RaiseCanExecuteChanged();
         QuarantineOtherCopiesCommand.RaiseCanExecuteChanged();
-        PreviousDuplicateGroupCommand.RaiseCanExecuteChanged();
-        NextDuplicateGroupCommand.RaiseCanExecuteChanged();
-        ToggleDuplicateReviewedCommand.RaiseCanExecuteChanged();
+        ShowDuplicateFolderInExplorerCommand.RaiseCanExecuteChanged();
+        ShowDuplicateFolderMatchInExplorerCommand.RaiseCanExecuteChanged();
+        QuarantineDuplicateFolderPairSideCommand.RaiseCanExecuteChanged();
     }
 
     private void RaiseVisualCommands()
@@ -3357,12 +4076,8 @@ public sealed class MainViewModel : ObservableObject
         PauseQualityAnalysisCommand.RaiseCanExecuteChanged();
         ResumeQualityAnalysisCommand.RaiseCanExecuteChanged();
         StopQualityAnalysisCommand.RaiseCanExecuteChanged();
-        SetVisualKeeperCommand.RaiseCanExecuteChanged();
         ClearVisualReviewCommand.RaiseCanExecuteChanged();
         QuarantineMarkedVisualCommand.RaiseCanExecuteChanged();
-        PreviousVisualGroupCommand.RaiseCanExecuteChanged();
-        NextVisualGroupCommand.RaiseCanExecuteChanged();
-        ToggleVisualReviewedCommand.RaiseCanExecuteChanged();
     }
 
     private void RaiseBurstCommands()
@@ -3382,9 +4097,6 @@ public sealed class MainViewModel : ObservableObject
         PauseQualityAnalysisCommand.RaiseCanExecuteChanged();
         ResumeQualityAnalysisCommand.RaiseCanExecuteChanged();
         StopQualityAnalysisCommand.RaiseCanExecuteChanged();
-        PreviousBurstGroupCommand.RaiseCanExecuteChanged();
-        NextBurstGroupCommand.RaiseCanExecuteChanged();
-        ToggleBurstReviewedCommand.RaiseCanExecuteChanged();
     }
 
     private void RaisePeopleCommands()
@@ -3406,9 +4118,6 @@ public sealed class MainViewModel : ObservableObject
         OpenPersonPhotoCommand.RaiseCanExecuteChanged();
         IgnorePersonGroupCommand.RaiseCanExecuteChanged();
         UndoLastFaceIgnoreCommand.RaiseCanExecuteChanged();
-        PreviousPersonGroupCommand.RaiseCanExecuteChanged();
-        NextPersonGroupCommand.RaiseCanExecuteChanged();
-        TogglePersonReviewedCommand.RaiseCanExecuteChanged();
         SetPersonCoverCommand.RaiseCanExecuteChanged();
     }
 
@@ -3424,9 +4133,6 @@ public sealed class MainViewModel : ObservableObject
         ShowEventPhotosCommand.RaiseCanExecuteChanged();
         ShowEventPhotoInExplorerCommand.RaiseCanExecuteChanged();
         OpenEventPhotoCommand.RaiseCanExecuteChanged();
-        PreviousEventGroupCommand.RaiseCanExecuteChanged();
-        NextEventGroupCommand.RaiseCanExecuteChanged();
-        ToggleEventReviewedCommand.RaiseCanExecuteChanged();
         SetEventCoverCommand.RaiseCanExecuteChanged();
         EditEventNotesCommand.RaiseCanExecuteChanged();
         SplitEventCommand.RaiseCanExecuteChanged();
@@ -3436,13 +4142,13 @@ public sealed class MainViewModel : ObservableObject
     {
         ShowBurstInExplorerCommand.RaiseCanExecuteChanged();
         OpenBurstFileCommand.RaiseCanExecuteChanged();
+        MarkBurstOthersCommand.RaiseCanExecuteChanged();
     }
 
     private void RaiseVisualViewerCommands()
     {
         ShowVisualInExplorerCommand.RaiseCanExecuteChanged();
         OpenVisualFileCommand.RaiseCanExecuteChanged();
-        SetVisualKeeperCommand.RaiseCanExecuteChanged();
     }
 
     private void RaiseDuplicateViewerCommands()
@@ -3476,6 +4182,32 @@ public sealed class MainViewModel : ObservableObject
         PermanentDeleteQuarantineCommand.RaiseCanExecuteChanged();
         ShowQuarantineInExplorerCommand.RaiseCanExecuteChanged();
         OpenQuarantineFileCommand.RaiseCanExecuteChanged();
+    }
+
+    private sealed class DuplicateFolderAccumulator
+    {
+        public DuplicateFolderAccumulator(string folderPath) => FolderPath = folderPath;
+        public string FolderPath { get; }
+        public int ExactSetCount { get; set; }
+        public int DuplicateFileCount { get; set; }
+        public int RemovableFromFolderCount { get; set; }
+        public long RemovableFromFolderBytes { get; set; }
+        public int RemovableElsewhereCount { get; set; }
+        public long RemovableElsewhereBytes { get; set; }
+        public int InternalExtraCount { get; set; }
+        public int RequiredKeeperCount { get; set; }
+        public Dictionary<string, DuplicateFolderMatchAccumulator> Matches { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class DuplicateFolderMatchAccumulator
+    {
+        public DuplicateFolderMatchAccumulator(string otherFolderPath) => OtherFolderPath = otherFolderPath;
+        public string OtherFolderPath { get; }
+        public int SharedSetCount { get; set; }
+        public int SelectedCopyCount { get; set; }
+        public long SelectedBytes { get; set; }
+        public int OtherCopyCount { get; set; }
+        public long OtherBytes { get; set; }
     }
 
     private static string TruncateMiddle(string text, int max)

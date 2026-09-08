@@ -1,10 +1,13 @@
 using Microsoft.Data.Sqlite;
+using PhotoArchiveManager.Infrastructure;
 using PhotoArchiveManager.Models;
 
 namespace PhotoArchiveManager.Services;
 
 public sealed class DatabaseService
 {
+    public const int CurrentSchemaVersion = 20;
+
     private readonly string _connectionString;
 
     public DatabaseService(string databasePath)
@@ -20,12 +23,39 @@ public sealed class DatabaseService
         }.ToString();
     }
 
-    public SqliteConnection CreateConnection() => new(_connectionString);
+    public SqliteConnection CreateConnection()
+    {
+        var connection = new SqliteConnection(_connectionString);
+        connection.StateChange += (_, args) =>
+        {
+            if (args.CurrentState != System.Data.ConnectionState.Open) return;
+
+            // journal_mode=WAL persists in the database, but synchronous is connection-local.
+            // Apply the project's intended WAL/NORMAL write policy to every pooled/new handle,
+            // otherwise some cache updates can silently fall back to SQLite's heavier default.
+            using var command = connection.CreateCommand();
+            command.CommandText = "PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000;";
+            command.ExecuteNonQuery();
+        };
+        return connection;
+    }
 
     public async Task InitializeAsync()
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync();
+
+        // Refuse a database created by a newer PAM before any persistent PRAGMA/migration is run.
+        // In particular, never rewrite user_version backwards: an older executable must fail safe.
+        var initialUserVersion = await GetUserVersionAsync(connection);
+        if (initialUserVersion > CurrentSchemaVersion)
+        {
+            throw new InvalidOperationException(
+                $"Эта Data\\archive.db использует более новую схему SQLite ({initialUserVersion}), " +
+                $"чем поддерживает эта версия Photo Archive Manager ({CurrentSchemaVersion}). " +
+                "База не изменена. Откройте её той же или более новой версией PAM.");
+        }
+
         await ExecuteAsync(connection, "PRAGMA journal_mode=WAL;");
         await ExecuteAsync(connection, "PRAGMA synchronous=NORMAL;");
         await ExecuteAsync(connection, "PRAGMA foreign_keys=ON;");
@@ -74,10 +104,14 @@ public sealed class DatabaseService
             PerceptualHashLastWriteUtcTicks INTEGER NOT NULL DEFAULT 0,
             PerceptualHashError TEXT NOT NULL DEFAULT '',
             PerceptualHashedUtc TEXT NOT NULL DEFAULT '',
+            PerceptualHashAlgorithmVersion INTEGER NOT NULL DEFAULT 0,
             QualityScore REAL NOT NULL DEFAULT -1,
+            TechnicalScore REAL NOT NULL DEFAULT -1,
             SharpnessScore REAL NOT NULL DEFAULT -1,
             BlurScore REAL NOT NULL DEFAULT -1,
             ExposureScore REAL NOT NULL DEFAULT -1,
+            ContrastScore REAL NOT NULL DEFAULT -1,
+            NoiseScore REAL NOT NULL DEFAULT -1,
             ResolutionScore REAL NOT NULL DEFAULT -1,
             CompressionScore REAL NOT NULL DEFAULT -1,
             QualityNotes TEXT NOT NULL DEFAULT '',
@@ -90,7 +124,13 @@ public sealed class DatabaseService
             EyeCount INTEGER NOT NULL DEFAULT -1,
             FaceScore REAL NOT NULL DEFAULT -1,
             EyeScore REAL NOT NULL DEFAULT -1,
+            FacePoseScore REAL NOT NULL DEFAULT -1,
+            WorstFaceScore REAL NOT NULL DEFAULT -1,
+            EyeOpennessScore REAL NOT NULL DEFAULT -1,
+            ClosedEyeCount INTEGER NOT NULL DEFAULT -1,
+            BlinkPenalty REAL NOT NULL DEFAULT 0,
             FaceIndexVersion INTEGER NOT NULL DEFAULT 0,
+            FaceIndexOrientationVersion INTEGER NOT NULL DEFAULT 0,
             FaceIndexFileSize INTEGER NOT NULL DEFAULT 0,
             FaceIndexLastWriteUtcTicks INTEGER NOT NULL DEFAULT 0,
             FaceIndexError TEXT NOT NULL DEFAULT '',
@@ -108,8 +148,6 @@ public sealed class DatabaseService
             SemanticIndexLastWriteUtcTicks INTEGER NOT NULL DEFAULT 0,
             SemanticIndexError TEXT NOT NULL DEFAULT '',
             SemanticIndexedUtc TEXT NOT NULL DEFAULT '',
-            IsFavorite INTEGER NOT NULL DEFAULT 0,
-            Rating INTEGER NOT NULL DEFAULT 0,
             IsQuarantined INTEGER NOT NULL DEFAULT 0,
             QuarantinePath TEXT NOT NULL DEFAULT '',
             IsDeleted INTEGER NOT NULL DEFAULT 0,
@@ -128,6 +166,8 @@ public sealed class DatabaseService
             NewPath TEXT NOT NULL,
             Sha256 TEXT NOT NULL DEFAULT '',
             FileSize INTEGER NOT NULL DEFAULT 0,
+            OriginalLastWriteUtcTicks INTEGER NOT NULL DEFAULT 0,
+            OriginalCreationUtcTicks INTEGER NOT NULL DEFAULT 0,
             CreatedUtc TEXT NOT NULL,
             UndoneUtc TEXT NULL,
             PermanentlyDeletedUtc TEXT NULL,
@@ -231,6 +271,8 @@ public sealed class DatabaseService
             NewSourceFolder TEXT NOT NULL,
             Sha256 TEXT NOT NULL,
             FileSize INTEGER NOT NULL,
+            OriginalLastWriteUtcTicks INTEGER NOT NULL DEFAULT 0,
+            OriginalCreationUtcTicks INTEGER NOT NULL DEFAULT 0,
             CreatedUtc TEXT NOT NULL,
             UndoneUtc TEXT NULL,
             Error TEXT NOT NULL DEFAULT '',
@@ -241,86 +283,107 @@ public sealed class DatabaseService
         """;
         await ExecuteAsync(connection, sql);
 
+        // Migration checks used to run PRAGMA table_info once per column (dozens of full schema
+        // scans on every startup). Cache the columns per table for this initialization pass.
+        var columnCache = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
         // v0.2 migration: preserve the v0.1 database and add hash cache columns in place.
-        await EnsureColumnAsync(connection, "Files", "Sha256", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "HashFileSize", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "HashLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "HashError", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "HashedUtc", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "Sha256", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "HashFileSize", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "HashLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "HashError", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "HashedUtc", "TEXT NOT NULL DEFAULT ''");
         // v0.2.5 migration: quarantine state and reversible action journal.
-        await EnsureColumnAsync(connection, "Files", "IsQuarantined", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "QuarantinePath", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "IsQuarantined", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "QuarantinePath", "TEXT NOT NULL DEFAULT ''");
 
         // v0.3 migration: cached perceptual hashes and explicit permanent-delete audit state.
-        await EnsureColumnAsync(connection, "Files", "PerceptualHash", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "AverageHash", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "PerceptualHashFileSize", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "PerceptualHashLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "PerceptualHashError", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "PerceptualHashedUtc", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "PerceptualHash", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "AverageHash", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "PerceptualHashFileSize", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "PerceptualHashLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "PerceptualHashError", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "PerceptualHashedUtc", "TEXT NOT NULL DEFAULT ''");
+        // v1.8.1 / schema 17: explicit hash cache version for bounded decode + full EXIF orientation.
+        await EnsureColumnAsync(connection, columnCache, "Files", "PerceptualHashAlgorithmVersion", "INTEGER NOT NULL DEFAULT 0");
 
         // v0.4 migration: cached technical quality score. No file is modified by this analysis.
-        await EnsureColumnAsync(connection, "Files", "QualityScore", "REAL NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "SharpnessScore", "REAL NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "BlurScore", "REAL NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "ExposureScore", "REAL NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "ResolutionScore", "REAL NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "CompressionScore", "REAL NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "QualityNotes", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "QualityFileSize", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "QualityLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "QualityError", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "QualityAnalyzedUtc", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "QualityScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "SharpnessScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "BlurScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "ExposureScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "ResolutionScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "CompressionScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "QualityNotes", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "QualityFileSize", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "QualityLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "QualityError", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "QualityAnalyzedUtc", "TEXT NOT NULL DEFAULT ''");
 
         // v0.5 migration: quality algorithm v2 adds local face/eye-aware metrics.
         // Old v0.4 quality values are kept for audit, but are not treated as current until recalculated.
-        await EnsureColumnAsync(connection, "Files", "QualityAlgorithmVersion", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "FaceCount", "INTEGER NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "EyeCount", "INTEGER NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "FaceScore", "REAL NOT NULL DEFAULT -1");
-        await EnsureColumnAsync(connection, "Files", "EyeScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "QualityAlgorithmVersion", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FaceCount", "INTEGER NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "EyeCount", "INTEGER NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FaceScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "EyeScore", "REAL NOT NULL DEFAULT -1");
+
+        // v1.8 / schema 16: Quality Score v3. Fully local, multi-scale technical metrics + YuNet face quality.
+        await EnsureColumnAsync(connection, columnCache, "Files", "TechnicalScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "ContrastScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "NoiseScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FacePoseScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "WorstFaceScore", "REAL NOT NULL DEFAULT -1");
+
+        // v1.9 / schema 18: conservative main-face eye-openness/blink metrics.
+        // Pure local OpenCV heuristics; no additional model or runtime network access.
+        await EnsureColumnAsync(connection, columnCache, "Files", "EyeOpennessScore", "REAL NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "ClosedEyeCount", "INTEGER NOT NULL DEFAULT -1");
+        await EnsureColumnAsync(connection, columnCache, "Files", "BlinkPenalty", "REAL NOT NULL DEFAULT 0");
 
         // v0.7 migration: persistent local face index and person groups.
-        await EnsureColumnAsync(connection, "Files", "FaceIndexVersion", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "FaceIndexFileSize", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "FaceIndexLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "FaceIndexError", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "FaceIndexedUtc", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FaceIndexVersion", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FaceIndexOrientationVersion", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FaceIndexFileSize", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FaceIndexLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FaceIndexError", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "FaceIndexedUtc", "TEXT NOT NULL DEFAULT ''");
 
         // v0.8 migration: cached GPS metadata and logical event catalog. Original files remain read-only.
-        await EnsureColumnAsync(connection, "Files", "GpsLatitude", "REAL NULL");
-        await EnsureColumnAsync(connection, "Files", "GpsLongitude", "REAL NULL");
-        await EnsureColumnAsync(connection, "Files", "GpsIndexVersion", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "GpsIndexFileSize", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "GpsIndexLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "GpsIndexError", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "GpsIndexedUtc", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "GpsLatitude", "REAL NULL");
+        await EnsureColumnAsync(connection, columnCache, "Files", "GpsLongitude", "REAL NULL");
+        await EnsureColumnAsync(connection, columnCache, "Files", "GpsIndexVersion", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "GpsIndexFileSize", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "GpsIndexLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "GpsIndexError", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "GpsIndexedUtc", "TEXT NOT NULL DEFAULT ''");
 
         // Legacy v0.9 columns are retained so old Data databases migrate in place. 1.6.1 no longer reads or writes them.
-        await EnsureColumnAsync(connection, "Files", "SemanticEmbedding", "BLOB NULL");
-        await EnsureColumnAsync(connection, "Files", "SemanticIndexVersion", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "SemanticIndexFileSize", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "SemanticIndexLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "SemanticIndexError", "TEXT NOT NULL DEFAULT ''");
-        await EnsureColumnAsync(connection, "Files", "SemanticIndexedUtc", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "SemanticEmbedding", "BLOB NULL");
+        await EnsureColumnAsync(connection, columnCache, "Files", "SemanticIndexVersion", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "SemanticIndexFileSize", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "SemanticIndexLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "SemanticIndexError", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "SemanticIndexedUtc", "TEXT NOT NULL DEFAULT ''");
 
         // v1.1 migration: preserve scanner-derived date separately so a catalog-only manual correction survives rescans and can be reverted.
-        await EnsureColumnAsync(connection, "Files", "AutoCaptureDate", "TEXT NULL");
-        await EnsureColumnAsync(connection, "Files", "AutoCaptureDateSource", "TEXT NOT NULL DEFAULT ''");
+        await EnsureColumnAsync(connection, columnCache, "Files", "AutoCaptureDate", "TEXT NULL");
+        await EnsureColumnAsync(connection, columnCache, "Files", "AutoCaptureDateSource", "TEXT NOT NULL DEFAULT ''");
         await ExecuteAsync(connection, "UPDATE Files SET AutoCaptureDate=CaptureDate WHERE AutoCaptureDate IS NULL AND CaptureDate IS NOT NULL AND CaptureDateSource<>'Ручная дата (каталог)';");
         await ExecuteAsync(connection, "UPDATE Files SET AutoCaptureDateSource=CaptureDateSource WHERE AutoCaptureDateSource='' AND CaptureDateSource<>'' AND CaptureDateSource<>'Ручная дата (каталог)';");
 
-        await EnsureColumnAsync(connection, "Files", "IsDeleted", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "DeletedUtc", "TEXT NULL");
-        await EnsureColumnAsync(connection, "Actions", "PermanentlyDeletedUtc", "TEXT NULL");
+        await EnsureColumnAsync(connection, columnCache, "Files", "IsDeleted", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Files", "DeletedUtc", "TEXT NULL");
+        await EnsureColumnAsync(connection, columnCache, "Actions", "PermanentlyDeletedUtc", "TEXT NULL");
 
-        // v1.6: lightweight catalog curation. These fields never modify original files.
-        await EnsureColumnAsync(connection, "Files", "IsFavorite", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "Files", "Rating", "INTEGER NOT NULL DEFAULT 0");
-        await EnsureColumnAsync(connection, "People", "RepresentativeFaceId", "INTEGER NULL");
-        await EnsureColumnAsync(connection, "Events", "RepresentativeFileId", "INTEGER NULL");
-        await EnsureColumnAsync(connection, "Events", "Notes", "TEXT NOT NULL DEFAULT ''");
-        await ExecuteAsync(connection, "UPDATE Files SET Rating=CASE WHEN Rating<0 THEN 0 WHEN Rating>5 THEN 5 ELSE Rating END;");
+        // PAM 1.10.0 no longer creates, reads or writes the old favorites/rating columns.
+        // Existing databases may still contain those legacy columns; leave their user data untouched.
+        // Drop only the obsolete helper indexes so they no longer add write/maintenance overhead.
+        await ExecuteAsync(connection, "DROP INDEX IF EXISTS IX_Files_IsFavorite;");
+        await ExecuteAsync(connection, "DROP INDEX IF EXISTS IX_Files_Rating;");
+        await EnsureColumnAsync(connection, columnCache, "People", "RepresentativeFaceId", "INTEGER NULL");
+        await EnsureColumnAsync(connection, columnCache, "Events", "RepresentativeFileId", "INTEGER NULL");
+        await EnsureColumnAsync(connection, columnCache, "Events", "Notes", "TEXT NOT NULL DEFAULT ''");
 
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_FileSize ON Files(FileSize);");
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_Sha256 ON Files(Sha256);");
@@ -329,18 +392,78 @@ public sealed class DatabaseService
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_IsDeleted ON Files(IsDeleted);");
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_GpsIndexVersion ON Files(GpsIndexVersion);");
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Events_StartDate ON Events(StartDate);");
-        await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_IsFavorite ON Files(IsFavorite) WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;");
-        await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_Rating ON Files(Rating) WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;");
         // Read-heavy UI paths benefit from partial indexes that contain only active catalog rows.
         // They do not alter catalog semantics and are safe to create on existing databases.
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_ActiveCaptureDate ON Files(CaptureDate DESC, LastWriteUtcTicks DESC) WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;");
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_ActiveYearCapture ON Files(EffectiveYear, CaptureDate DESC) WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;");
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_ActiveSourceCapture ON Files(SourceFolder, CaptureDate DESC) WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;");
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_ActiveCameraDisplay ON Files(TRIM(CameraMake || ' ' || CameraModel)) WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;");
+        await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_ActiveFileName ON Files(FileName COLLATE NOCASE, FullPath COLLATE NOCASE) WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;");
+        await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_Files_ActiveFullPath ON Files(FullPath COLLATE NOCASE) WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;");
         // v1.0 migration: reversible physical organization journal.
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_OrganizationMoves_FileId ON OrganizationMoves(FileId);");
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS IX_OrganizationMoves_UndoneUtc ON OrganizationMoves(UndoneUtc);");
-        await ExecuteAsync(connection, "PRAGMA user_version=15;");
+        // v1.14.6 / schema 20: Organization Undo must restore the original filesystem dates,
+        // not the EXIF-derived CreationTime assigned to the organized destination.
+        await EnsureColumnAsync(connection, columnCache, "OrganizationMoves", "OriginalLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "OrganizationMoves", "OriginalCreationUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        // Quarantine Undo needs the exact pre-quarantine filesystem dates as well. A quarantine
+        // located on FAT/exFAT can round timestamps; relying on the quarantine file would then lose
+        // the original values when the user restores it.
+        await EnsureColumnAsync(connection, columnCache, "Actions", "OriginalLastWriteUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+        await EnsureColumnAsync(connection, columnCache, "Actions", "OriginalCreationUtcTicks", "INTEGER NOT NULL DEFAULT 0");
+
+        // Schema 20 also detaches inactive catalogue rows from their old source path. Otherwise a
+        // brand-new file that later appears at the same path would hit UNIQUE(FullPath) and reuse
+        // the quarantined/deleted FileId, corrupting the action journal's logical identity.
+        if (initialUserVersion < 20)
+        {
+            await ExecuteAsync(connection, """
+                UPDATE Files
+                SET FullPath=CASE
+                    WHEN IsQuarantined=1 AND TRIM(QuarantinePath)<>''
+                        THEN QuarantinePath || '.pam-catalog-record-' || Id
+                    WHEN IsDeleted=1 AND FullPath NOT LIKE ('%.pam-deleted-record-' || Id)
+                        THEN FullPath || '.pam-deleted-record-' || Id
+                    WHEN IsDeleted=1
+                        THEN FullPath
+                    ELSE FullPath
+                END
+                WHERE IsQuarantined=1 OR IsDeleted=1;
+                """);
+        }
+
+        // v1.8.1 / schema 17: PerceptualHashAlgorithmVersion invalidates the old hash cache
+        // without deleting it. v2 hashes use bounded decode and all eight EXIF orientations.
+        // v1.9 / schema 18 adds cached eye-openness/blink metrics. Quality uses its independent
+        // QualityAlgorithmVersion=6, so older scores are recalculated without touching originals.
+        // v1.9.1 / schema 19: explicit orientation-normalization version for the face cache.
+        // FaceIndexVersion=2 existed both before and after all eight EXIF Orientation values were
+        // normalized consistently, so the old integer alone cannot distinguish a mirrored legacy
+        // cache. Keep all DetectedFaces rows for safe in-place refresh; only mirrored 2/4/5/7 rows
+        // are made stale. Non-mirrored v2 rows are certified as orientation-version 1 without work.
+        if (initialUserVersion < 19)
+        {
+            // Older PAM releases accepted a few invariant legacy date spellings. The shared parser
+            // reads all of them correctly, but SQLite comparisons are textual. Canonicalize once so
+            // ORDER BY, MIN/MAX and event split boundaries stay chronologically correct too.
+            await NormalizeLegacyStoredDatesAsync(connection);
+        }
+
+        // This migration belongs strictly to schema 19. Do NOT rerun it on every future schema bump:
+        // doing so would mark already-refreshed mirrored orientations (2/4/5/7) stale again.
+        if (initialUserVersion < 19)
+        {
+            await ExecuteAsync(connection, """
+                UPDATE Files
+                SET FaceIndexOrientationVersion=CASE
+                    WHEN FaceIndexVersion=2 AND Orientation NOT IN (2,4,5,7) THEN 1
+                    ELSE 0
+                END;
+                """);
+        }
+
+        await ExecuteAsync(connection, $"PRAGMA user_version={CurrentSchemaVersion};");
         // Let SQLite refresh planner hints opportunistically after migrations/index creation.
         await ExecuteAsync(connection, "PRAGMA optimize;");
     }
@@ -409,10 +532,30 @@ public sealed class DatabaseService
                 q.Parameters.AddWithValue("$path", normalized);
                 quarantined = Convert.ToInt32(await q.ExecuteScalarAsync());
             }
-            if (quarantined > 0)
+
+            // A normal active quarantine is a finished reversible state and must not block
+            // detaching a source. But never detach if the catalogue says a file is quarantined
+            // while its active QUARANTINE journal entry is missing: that would leave an orphan
+            // which the UI could no longer restore or permanently delete safely.
+            await using (var q = connection.CreateCommand())
             {
-                tx.Rollback();
-                return new SourceCatalogRemovalResult { ActiveQuarantineCount = quarantined };
+                q.Transaction = tx;
+                q.CommandText = """
+                    SELECT COUNT(*)
+                    FROM Files f
+                    WHERE f.SourceFolder=$path AND f.IsQuarantined=1 AND f.IsDeleted=0
+                      AND NOT EXISTS(
+                          SELECT 1 FROM Actions a
+                          WHERE a.FileId=f.Id AND a.ActionType='QUARANTINE'
+                            AND a.UndoneUtc IS NULL AND a.PermanentlyDeletedUtc IS NULL
+                      );
+                    """;
+                q.Parameters.AddWithValue("$path", normalized);
+                var orphanedQuarantine = Convert.ToInt32(await q.ExecuteScalarAsync());
+                if (orphanedQuarantine > 0)
+                    throw new InvalidOperationException(
+                        $"В каталоге найдено {orphanedQuarantine:N0} файлов, помеченных как карантинные, но без активной записи Undo. " +
+                        "Источник не закрыт, чтобы не потерять управление этими файлами. Проверьте Data/archive.db или журнал ошибок.");
             }
 
             var cache = new List<string>();
@@ -443,7 +586,9 @@ public sealed class DatabaseService
                 q.CommandText = """
                     SELECT f.Id FROM Files f
                     WHERE f.SourceFolder=$path
-                      AND (EXISTS(SELECT 1 FROM Actions a WHERE a.FileId=f.Id) OR EXISTS(SELECT 1 FROM OrganizationMoves o WHERE o.FileId=f.Id));
+                      AND (f.IsQuarantined=1
+                           OR EXISTS(SELECT 1 FROM Actions a WHERE a.FileId=f.Id)
+                           OR EXISTS(SELECT 1 FROM OrganizationMoves o WHERE o.FileId=f.Id));
                     """;
                 q.Parameters.AddWithValue("$path", normalized);
                 await using var reader = await q.ExecuteReaderAsync();
@@ -470,6 +615,7 @@ public sealed class DatabaseService
                 q.CommandText = """
                     DELETE FROM Files
                     WHERE SourceFolder=$path
+                      AND IsQuarantined=0
                       AND NOT EXISTS(SELECT 1 FROM Actions a WHERE a.FileId=Files.Id)
                       AND NOT EXISTS(SELECT 1 FROM OrganizationMoves o WHERE o.FileId=Files.Id);
                     """;
@@ -509,6 +655,7 @@ public sealed class DatabaseService
             tx.Commit();
             return new SourceCatalogRemovalResult
             {
+                ActiveQuarantineCount = quarantined,
                 DeletedCatalogRecords = deleted,
                 AuditRecordsRetained = auditIds.Count,
                 CacheFilesToDelete = cache
@@ -550,11 +697,14 @@ public sealed class DatabaseService
                     throw new InvalidOperationException("У источника есть активные файлы в карантине. Сначала верните их (Undo) или разберите карантин, и только затем меняйте путь источника.");
             }
 
+            // Only active catalogue rows have a physical path under the source root. Schema 20
+            // deliberately detaches permanently deleted audit rows from their old FullPath so a
+            // future new file can reuse that path safely. Do not try to remap those internal paths.
             var rows = new List<(long Id, string FullPath)>();
             await using (var q = connection.CreateCommand())
             {
                 q.Transaction = tx;
-                q.CommandText = "SELECT Id, FullPath FROM Files WHERE SourceFolder=$oldPath;";
+                q.CommandText = "SELECT Id, FullPath FROM Files WHERE SourceFolder=$oldPath AND IsDeleted=0;";
                 q.Parameters.AddWithValue("$oldPath", oldNormalized);
                 await using var reader = await q.ExecuteReaderAsync();
                 while (await reader.ReadAsync()) rows.Add((reader.GetInt64(0), reader.GetString(1)));
@@ -584,10 +734,22 @@ public sealed class DatabaseService
             {
                 await using var q = connection.CreateCommand();
                 q.Transaction = tx;
-                q.CommandText = "UPDATE Files SET FullPath=$newFull, SourceFolder=$newRoot, IsMissing=CASE WHEN IsDeleted=0 THEN 0 ELSE IsMissing END WHERE Id=$id;";
+                q.CommandText = "UPDATE Files SET FullPath=$newFull, SourceFolder=$newRoot, IsMissing=0 WHERE Id=$id;";
                 q.Parameters.AddWithValue("$newFull", row.NewFullPath);
                 q.Parameters.AddWithValue("$newRoot", newNormalized);
                 q.Parameters.AddWithValue("$id", row.Id);
+                await q.ExecuteNonQueryAsync();
+            }
+
+            // Deleted rows are retained only for Undo/audit identity. Their schema-20 FullPath is
+            // an internal detached sentinel and must stay detached, but source attribution follows
+            // the renamed root so later source cleanup still finds the complete audit history.
+            await using (var q = connection.CreateCommand())
+            {
+                q.Transaction = tx;
+                q.CommandText = "UPDATE Files SET SourceFolder=$newRoot WHERE SourceFolder=$oldRoot AND IsDeleted=1;";
+                q.Parameters.AddWithValue("$newRoot", newNormalized);
+                q.Parameters.AddWithValue("$oldRoot", oldNormalized);
                 await q.ExecuteNonQueryAsync();
             }
 
@@ -634,11 +796,11 @@ public sealed class DatabaseService
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT FullPath, FileSize, LastWriteUtcTicks FROM Files WHERE SourceFolder=$source AND IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;";
+        command.CommandText = "SELECT FullPath, FileSize, LastWriteUtcTicks, Error FROM Files WHERE SourceFolder=$source AND IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;";
         command.Parameters.AddWithValue("$source", NormalizeDirectory(sourceFolder));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
-            result[reader.GetString(0)] = new FileSignature(reader.GetInt64(1), reader.GetInt64(2));
+            result[reader.GetString(0)] = new FileSignature(reader.GetInt64(1), reader.GetInt64(2), !string.IsNullOrWhiteSpace(reader.GetString(3)));
         return result;
     }
 
@@ -697,10 +859,14 @@ public sealed class DatabaseService
             PerceptualHashLastWriteUtcTicks=0,
             PerceptualHashError='',
             PerceptualHashedUtc='',
+            PerceptualHashAlgorithmVersion=0,
             QualityScore=-1,
+            TechnicalScore=-1,
             SharpnessScore=-1,
             BlurScore=-1,
             ExposureScore=-1,
+            ContrastScore=-1,
+            NoiseScore=-1,
             ResolutionScore=-1,
             CompressionScore=-1,
             QualityNotes='',
@@ -713,7 +879,13 @@ public sealed class DatabaseService
             EyeCount=-1,
             FaceScore=-1,
             EyeScore=-1,
+            FacePoseScore=-1,
+            WorstFaceScore=-1,
+            EyeOpennessScore=-1,
+            ClosedEyeCount=-1,
+            BlinkPenalty=0,
             FaceIndexVersion=0,
+            FaceIndexOrientationVersion=0,
             FaceIndexFileSize=0,
             FaceIndexLastWriteUtcTicks=0,
             FaceIndexError='',
@@ -729,28 +901,35 @@ public sealed class DatabaseService
 
     }
 
-    public async Task TouchUnchangedAsync(SqliteConnection connection, SqliteTransaction transaction, string fullPath, string scanId, CancellationToken cancellationToken)
+    public async Task CompleteSourceScanAsync(
+        string sourceFolder,
+        IReadOnlyCollection<string> missingPaths,
+        CancellationToken cancellationToken)
     {
-        await using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText = "UPDATE Files SET LastSeenScanId=$scanId, IsMissing=0 WHERE FullPath=$path AND IsQuarantined=0 AND IsDeleted=0;";
-        command.Parameters.AddWithValue("$scanId", scanId);
-        command.Parameters.AddWithValue("$path", fullPath);
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
-    public async Task CompleteSourceScanAsync(string sourceFolder, string scanId, CancellationToken cancellationToken)
-    {
+        var normalizedSource = NormalizeDirectory(sourceFolder);
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var transaction = connection.BeginTransaction();
 
-        await using (var command = connection.CreateCommand())
+        // The scanner removes every path it actually sees from the pre-scan signature map.
+        // Only the leftovers can have disappeared, so do not rewrite every unchanged catalog row.
+        // Keep batches below SQLite's common parameter limit.
+        const int batchSize = 800;
+        var paths = missingPaths?.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+        for (var offset = 0; offset < paths.Length; offset += batchSize)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batch = paths.Skip(offset).Take(batchSize).ToArray();
+            await using var command = connection.CreateCommand();
             command.Transaction = transaction;
-            command.CommandText = "UPDATE Files SET IsMissing=1 WHERE SourceFolder=$source AND LastSeenScanId<>$scanId AND IsQuarantined=0 AND IsDeleted=0;";
-            command.Parameters.AddWithValue("$source", NormalizeDirectory(sourceFolder));
-            command.Parameters.AddWithValue("$scanId", scanId);
+            command.Parameters.AddWithValue("$source", normalizedSource);
+            var names = new string[batch.Length];
+            for (var i = 0; i < batch.Length; i++)
+            {
+                names[i] = "$p" + i;
+                command.Parameters.AddWithValue(names[i], batch[i]);
+            }
+            command.CommandText = $"UPDATE Files SET IsMissing=1 WHERE SourceFolder=$source AND IsQuarantined=0 AND IsDeleted=0 AND FullPath IN ({string.Join(',', names)});";
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -759,7 +938,7 @@ public sealed class DatabaseService
             command.Transaction = transaction;
             command.CommandText = "UPDATE SourceFolders SET LastScanUtc=$utc WHERE Path=$source;";
             command.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
-            command.Parameters.AddWithValue("$source", NormalizeDirectory(sourceFolder));
+            command.Parameters.AddWithValue("$source", normalizedSource);
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         await transaction.CommitAsync(cancellationToken);
@@ -820,7 +999,9 @@ public sealed class DatabaseService
                 HashLastWriteUtcTicks=$ticks,
                 HashError=$error,
                 HashedUtc=$utc
-            WHERE Id=$id;
+            WHERE Id=$id
+              AND FileSize=$size AND LastWriteUtcTicks=$ticks
+              AND IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;
             """;
         command.Parameters.AddWithValue("$sha", sha256 ?? "");
         command.Parameters.AddWithValue("$size", hashFileSize);
@@ -845,7 +1026,10 @@ public sealed class DatabaseService
                    PerceptualHashLastWriteUtcTicks, PerceptualHashError,
                    QualityScore, SharpnessScore, BlurScore, ExposureScore, ResolutionScore, CompressionScore,
                    QualityNotes, QualityFileSize, QualityLastWriteUtcTicks, QualityError,
-                   QualityAlgorithmVersion, FaceCount, EyeCount, FaceScore, EyeScore
+                   QualityAlgorithmVersion, FaceCount, EyeCount, FaceScore, EyeScore,
+                   TechnicalScore, ContrastScore, NoiseScore, FacePoseScore, WorstFaceScore,
+                   EyeOpennessScore, ClosedEyeCount, BlinkPenalty,
+                   PerceptualHashAlgorithmVersion
             FROM Files
             WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0 AND FileSize>0
             ORDER BY Id;
@@ -890,7 +1074,16 @@ public sealed class DatabaseService
                 FaceCount = reader.GetInt32(31),
                 EyeCount = reader.GetInt32(32),
                 FaceScore = reader.GetDouble(33),
-                EyeScore = reader.GetDouble(34)
+                EyeScore = reader.GetDouble(34),
+                TechnicalScore = reader.GetDouble(35),
+                ContrastScore = reader.GetDouble(36),
+                NoiseScore = reader.GetDouble(37),
+                FacePoseScore = reader.GetDouble(38),
+                WorstFaceScore = reader.GetDouble(39),
+                EyeOpennessScore = reader.GetDouble(40),
+                ClosedEyeCount = reader.GetInt32(41),
+                BlinkPenalty = reader.GetDouble(42),
+                PerceptualHashAlgorithmVersion = reader.GetInt32(43)
             });
         }
         return result;
@@ -914,8 +1107,11 @@ public sealed class DatabaseService
                 PerceptualHashFileSize=$size,
                 PerceptualHashLastWriteUtcTicks=$ticks,
                 PerceptualHashError=$error,
-                PerceptualHashedUtc=$utc
-            WHERE Id=$id AND IsDeleted=0;
+                PerceptualHashedUtc=$utc,
+                PerceptualHashAlgorithmVersion=$algorithmVersion
+            WHERE Id=$id
+              AND FileSize=$size AND LastWriteUtcTicks=$ticks
+              AND IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;
             """;
         command.Parameters.AddWithValue("$dhash", dHash ?? "");
         command.Parameters.AddWithValue("$ahash", aHash ?? "");
@@ -923,6 +1119,7 @@ public sealed class DatabaseService
         command.Parameters.AddWithValue("$ticks", lastWriteUtcTicks);
         command.Parameters.AddWithValue("$error", error ?? "");
         command.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$algorithmVersion", PerceptualHashAlgorithmInfo.CurrentVersion);
         command.Parameters.AddWithValue("$id", fileId);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -940,9 +1137,12 @@ public sealed class DatabaseService
         command.CommandText = """
             UPDATE Files
             SET QualityScore=$total,
+                TechnicalScore=$technical,
                 SharpnessScore=$sharpness,
                 BlurScore=$blur,
                 ExposureScore=$exposure,
+                ContrastScore=$contrast,
+                NoiseScore=$noise,
                 ResolutionScore=$resolution,
                 CompressionScore=$compression,
                 QualityNotes=$notes,
@@ -950,17 +1150,27 @@ public sealed class DatabaseService
                 QualityLastWriteUtcTicks=$ticks,
                 QualityError=$error,
                 QualityAnalyzedUtc=$utc,
-                QualityAlgorithmVersion=2,
+                QualityAlgorithmVersion=$qualityAlgorithmVersion,
                 FaceCount=$faceCount,
                 EyeCount=$eyeCount,
                 FaceScore=$faceScore,
-                EyeScore=$eyeScore
-            WHERE Id=$id AND IsDeleted=0;
+                EyeScore=$eyeScore,
+                FacePoseScore=$facePose,
+                WorstFaceScore=$worstFace,
+                EyeOpennessScore=$eyeOpenness,
+                ClosedEyeCount=$closedEyeCount,
+                BlinkPenalty=$blinkPenalty
+            WHERE Id=$id
+              AND FileSize=$size AND LastWriteUtcTicks=$ticks
+              AND IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;
             """;
         command.Parameters.AddWithValue("$total", metrics?.TotalScore ?? -1);
+        command.Parameters.AddWithValue("$technical", metrics?.TechnicalScore ?? -1);
         command.Parameters.AddWithValue("$sharpness", metrics?.SharpnessScore ?? -1);
         command.Parameters.AddWithValue("$blur", metrics?.BlurScore ?? -1);
         command.Parameters.AddWithValue("$exposure", metrics?.ExposureScore ?? -1);
+        command.Parameters.AddWithValue("$contrast", metrics?.ContrastScore ?? -1);
+        command.Parameters.AddWithValue("$noise", metrics?.NoiseScore ?? -1);
         command.Parameters.AddWithValue("$resolution", metrics?.ResolutionScore ?? -1);
         command.Parameters.AddWithValue("$compression", metrics?.CompressionScore ?? -1);
         command.Parameters.AddWithValue("$notes", metrics?.Notes ?? "");
@@ -968,6 +1178,12 @@ public sealed class DatabaseService
         command.Parameters.AddWithValue("$eyeCount", metrics?.EyeCount ?? -1);
         command.Parameters.AddWithValue("$faceScore", metrics?.FaceScore ?? -1);
         command.Parameters.AddWithValue("$eyeScore", metrics?.EyeScore ?? -1);
+        command.Parameters.AddWithValue("$facePose", metrics?.FacePoseScore ?? -1);
+        command.Parameters.AddWithValue("$worstFace", metrics?.WorstFaceScore ?? -1);
+        command.Parameters.AddWithValue("$eyeOpenness", metrics?.EyeOpennessScore ?? -1);
+        command.Parameters.AddWithValue("$closedEyeCount", metrics?.ClosedEyeCount ?? -1);
+        command.Parameters.AddWithValue("$blinkPenalty", metrics?.BlinkPenalty ?? 0);
+        command.Parameters.AddWithValue("$qualityAlgorithmVersion", QualityAlgorithmInfo.CurrentVersion);
         command.Parameters.AddWithValue("$size", fileSize);
         command.Parameters.AddWithValue("$ticks", lastWriteUtcTicks);
         command.Parameters.AddWithValue("$error", error ?? "");
@@ -1070,6 +1286,42 @@ public sealed class DatabaseService
             reader.IsDBNull(3) ? 0 : reader.GetInt64(3));
     }
 
+    private static void ApplyPhotoReviewFilter(List<string> where, SqliteCommand command, PhotoReviewFilter filter)
+    {
+        const string untrustedDate = "(CaptureDate IS NULL OR NOT (CaptureDateSource LIKE 'EXIF%' OR CaptureDateSource=$manualDateSource))";
+        const string withoutEvent = "NOT EXISTS (SELECT 1 FROM EventFiles ef_review WHERE ef_review.FileId=Files.Id)";
+        const string indexError = "TRIM(COALESCE(Error,''))<>''";
+
+        switch (filter)
+        {
+            case PhotoReviewFilter.NeedsReview:
+                where.Add($"({untrustedDate} OR {withoutEvent} OR {indexError})");
+                command.Parameters.AddWithValue("$manualDateSource", CaptureDatePolicy.ManualCatalog);
+                break;
+            case PhotoReviewFilter.UntrustedDate:
+                where.Add(untrustedDate);
+                command.Parameters.AddWithValue("$manualDateSource", CaptureDatePolicy.ManualCatalog);
+                break;
+            case PhotoReviewFilter.WithoutEvent:
+                where.Add(withoutEvent);
+                break;
+            case PhotoReviewFilter.IndexError:
+                where.Add(indexError);
+                break;
+        }
+    }
+
+    private static string GetPhotoOrderBy(PhotoSortOrder sortOrder) => sortOrder switch
+    {
+        PhotoSortOrder.CaptureDateAscending =>
+            "CASE WHEN CaptureDate IS NULL THEN 1 ELSE 0 END, CaptureDate ASC, LastWriteUtcTicks ASC, Id ASC",
+        PhotoSortOrder.FileNameAscending =>
+            "FileName COLLATE NOCASE ASC, FullPath COLLATE NOCASE ASC, Id ASC",
+        PhotoSortOrder.FullPathAscending =>
+            "FullPath COLLATE NOCASE ASC, Id ASC",
+        _ => "CASE WHEN CaptureDate IS NULL THEN 1 ELSE 0 END, CaptureDate DESC, LastWriteUtcTicks DESC, Id DESC"
+    };
+
     public async Task<List<PhotoItem>> QueryPhotosAsync(PhotoQuery query, CancellationToken cancellationToken = default)
     {
         var result = new List<PhotoItem>();
@@ -1100,7 +1352,7 @@ public sealed class DatabaseService
         }
         if (query.PersonId.HasValue)
         {
-            where.Add("EXISTS (SELECT 1 FROM DetectedFaces df WHERE df.FileId=Files.Id AND df.PersonId=$personId AND df.IsIgnored=0) AND FaceIndexVersion=2 AND FaceIndexFileSize=FileSize AND FaceIndexLastWriteUtcTicks=LastWriteUtcTicks");
+            where.Add("EXISTS (SELECT 1 FROM DetectedFaces df WHERE df.FileId=Files.Id AND df.PersonId=$personId AND df.IsIgnored=0) AND FaceIndexVersion=2 AND FaceIndexOrientationVersion=1 AND FaceIndexFileSize=FileSize AND FaceIndexLastWriteUtcTicks=LastWriteUtcTicks AND FaceIndexError=''");
             command.Parameters.AddWithValue("$personId", query.PersonId.Value);
         }
         if (query.EventId.HasValue)
@@ -1111,26 +1363,21 @@ public sealed class DatabaseService
         if (query.DateFrom.HasValue)
         {
             where.Add("CaptureDate >= $dateFrom");
-            command.Parameters.AddWithValue("$dateFrom", query.DateFrom.Value.ToString("yyyy-MM-dd HH:mm:ss"));
+            command.Parameters.AddWithValue("$dateFrom", FormatStoredDateTime(query.DateFrom.Value));
         }
         if (query.DateToExclusive.HasValue)
         {
             where.Add("CaptureDate < $dateTo");
-            command.Parameters.AddWithValue("$dateTo", query.DateToExclusive.Value.ToString("yyyy-MM-dd HH:mm:ss"));
+            command.Parameters.AddWithValue("$dateTo", FormatStoredDateTime(query.DateToExclusive.Value));
         }
-        if (query.FavoriteOnly) where.Add("IsFavorite=1");
-        if (query.MinRating > 0)
-        {
-            where.Add("Rating >= $minRating");
-            command.Parameters.AddWithValue("$minRating", Math.Clamp(query.MinRating, 1, 5));
-        }
+        ApplyPhotoReviewFilter(where, command, query.ReviewFilter);
 
         command.CommandText = $"""
             SELECT Id, FullPath, FileName, SourceFolder, ThumbnailPath, FileSize, Width, Height,
-                   CaptureDate, CaptureDateSource, CameraMake, CameraModel, Error, IsFavorite, Rating
+                   CaptureDate, CaptureDateSource, CameraMake, CameraModel, Error
             FROM Files
             WHERE {string.Join(" AND ", where)}
-            ORDER BY CaptureDate DESC, LastWriteUtcTicks DESC
+            ORDER BY {GetPhotoOrderBy(query.SortOrder)}
             LIMIT $limit OFFSET $offset;
             """;
         command.Parameters.AddWithValue("$limit", query.Limit);
@@ -1153,9 +1400,7 @@ public sealed class DatabaseService
                 CaptureDateSource = reader.GetString(9),
                 CameraMake = reader.GetString(10),
                 CameraModel = reader.GetString(11),
-                Error = reader.GetString(12),
-                IsFavorite = reader.GetInt32(13) != 0,
-                Rating = reader.GetInt32(14)
+                Error = reader.GetString(12)
             });
         }
         return result;
@@ -1189,7 +1434,7 @@ public sealed class DatabaseService
         }
         if (query.PersonId.HasValue)
         {
-            where.Add("EXISTS (SELECT 1 FROM DetectedFaces df WHERE df.FileId=Files.Id AND df.PersonId=$personId AND df.IsIgnored=0) AND FaceIndexVersion=2 AND FaceIndexFileSize=FileSize AND FaceIndexLastWriteUtcTicks=LastWriteUtcTicks");
+            where.Add("EXISTS (SELECT 1 FROM DetectedFaces df WHERE df.FileId=Files.Id AND df.PersonId=$personId AND df.IsIgnored=0) AND FaceIndexVersion=2 AND FaceIndexOrientationVersion=1 AND FaceIndexFileSize=FileSize AND FaceIndexLastWriteUtcTicks=LastWriteUtcTicks AND FaceIndexError=''");
             command.Parameters.AddWithValue("$personId", query.PersonId.Value);
         }
         if (query.EventId.HasValue)
@@ -1200,48 +1445,16 @@ public sealed class DatabaseService
         if (query.DateFrom.HasValue)
         {
             where.Add("CaptureDate >= $dateFrom");
-            command.Parameters.AddWithValue("$dateFrom", query.DateFrom.Value.ToString("yyyy-MM-dd HH:mm:ss"));
+            command.Parameters.AddWithValue("$dateFrom", FormatStoredDateTime(query.DateFrom.Value));
         }
         if (query.DateToExclusive.HasValue)
         {
             where.Add("CaptureDate < $dateTo");
-            command.Parameters.AddWithValue("$dateTo", query.DateToExclusive.Value.ToString("yyyy-MM-dd HH:mm:ss"));
+            command.Parameters.AddWithValue("$dateTo", FormatStoredDateTime(query.DateToExclusive.Value));
         }
-        if (query.FavoriteOnly) where.Add("IsFavorite=1");
-        if (query.MinRating > 0)
-        {
-            where.Add("Rating >= $minRating");
-            command.Parameters.AddWithValue("$minRating", Math.Clamp(query.MinRating, 1, 5));
-        }
+        ApplyPhotoReviewFilter(where, command, query.ReviewFilter);
         command.CommandText = $"SELECT COUNT(*) FROM Files WHERE {string.Join(" AND ", where)};";
         return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken));
-    }
-
-    public async Task SetPhotoFavoriteAsync(long fileId, bool isFavorite, CancellationToken cancellationToken = default)
-    {
-        if (fileId <= 0) throw new ArgumentOutOfRangeException(nameof(fileId));
-        await using var connection = CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE Files SET IsFavorite=$favorite WHERE Id=$id AND IsDeleted=0;";
-        command.Parameters.AddWithValue("$favorite", isFavorite ? 1 : 0);
-        command.Parameters.AddWithValue("$id", fileId);
-        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
-            throw new InvalidOperationException("Фотография не найдена в каталоге.");
-    }
-
-    public async Task SetPhotoRatingAsync(long fileId, int rating, CancellationToken cancellationToken = default)
-    {
-        if (fileId <= 0) throw new ArgumentOutOfRangeException(nameof(fileId));
-        rating = Math.Clamp(rating, 0, 5);
-        await using var connection = CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "UPDATE Files SET Rating=$rating WHERE Id=$id AND IsDeleted=0;";
-        command.Parameters.AddWithValue("$rating", rating);
-        command.Parameters.AddWithValue("$id", fileId);
-        if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
-            throw new InvalidOperationException("Фотография не найдена в каталоге.");
     }
 
     public async Task<List<TimelineMonthItem>> GetTimelineMonthsAsync(CancellationToken cancellationToken = default)
@@ -1252,7 +1465,7 @@ public sealed class DatabaseService
         await using var command = connection.CreateCommand();
         command.CommandText = """
             WITH Active AS (
-                SELECT Id, CaptureDate, ThumbnailPath, IsFavorite, Rating,
+                SELECT Id, CaptureDate, ThumbnailPath, QualityScore,
                        substr(CaptureDate,1,7) AS YearMonth,
                        CAST(substr(CaptureDate,1,4) AS INTEGER) AS Y,
                        CAST(substr(CaptureDate,6,2) AS INTEGER) AS M
@@ -1266,7 +1479,8 @@ public sealed class DatabaseService
                 SELECT YearMonth, ThumbnailPath,
                        ROW_NUMBER() OVER (
                            PARTITION BY YearMonth
-                           ORDER BY IsFavorite DESC, Rating DESC, CaptureDate ASC, Id ASC
+                           ORDER BY CASE WHEN QualityScore>=0 THEN 0 ELSE 1 END,
+                                    QualityScore DESC, CaptureDate ASC, Id ASC
                        ) AS rn
                 FROM Active
             ),
@@ -1351,6 +1565,8 @@ public sealed class DatabaseService
         string quarantinePath,
         string sha256,
         long fileSize,
+        long originalLastWriteUtcTicks,
+        long originalCreationUtcTicks,
         CancellationToken cancellationToken = default)
     {
         await using var connection = CreateConnection();
@@ -1362,10 +1578,12 @@ public sealed class DatabaseService
             update.Transaction = transaction;
             update.CommandText = """
                 UPDATE Files
-                SET IsQuarantined=1, QuarantinePath=$q
-                WHERE Id=$id AND IsQuarantined=0 AND IsDeleted=0;
+                SET FullPath=$catalogPath, IsQuarantined=1, QuarantinePath=$q
+                WHERE Id=$id AND FullPath=$original AND IsQuarantined=0 AND IsDeleted=0;
                 """;
+            update.Parameters.AddWithValue("$catalogPath", BuildInactiveCatalogPath(quarantinePath, fileId, "quarantine"));
             update.Parameters.AddWithValue("$q", quarantinePath);
+            update.Parameters.AddWithValue("$original", Path.GetFullPath(originalPath));
             update.Parameters.AddWithValue("$id", fileId);
             var changed = await update.ExecuteNonQueryAsync(cancellationToken);
             if (changed != 1)
@@ -1376,14 +1594,16 @@ public sealed class DatabaseService
         {
             action.Transaction = transaction;
             action.CommandText = """
-                INSERT INTO Actions(FileId, ActionType, OriginalPath, NewPath, Sha256, FileSize, CreatedUtc, UndoneUtc, Error)
-                VALUES($fileId, 'QUARANTINE', $original, $new, $sha, $size, $created, NULL, '');
+                INSERT INTO Actions(FileId, ActionType, OriginalPath, NewPath, Sha256, FileSize, OriginalLastWriteUtcTicks, OriginalCreationUtcTicks, CreatedUtc, UndoneUtc, Error)
+                VALUES($fileId, 'QUARANTINE', $original, $new, $sha, $size, $lastWrite, $creation, $created, NULL, '');
                 """;
             action.Parameters.AddWithValue("$fileId", fileId);
             action.Parameters.AddWithValue("$original", originalPath);
             action.Parameters.AddWithValue("$new", quarantinePath);
             action.Parameters.AddWithValue("$sha", sha256);
             action.Parameters.AddWithValue("$size", fileSize);
+            action.Parameters.AddWithValue("$lastWrite", originalLastWriteUtcTicks);
+            action.Parameters.AddWithValue("$creation", originalCreationUtcTicks);
             action.Parameters.AddWithValue("$created", DateTime.UtcNow.ToString("O"));
             await action.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -1391,11 +1611,84 @@ public sealed class DatabaseService
         await transaction.CommitAsync(cancellationToken);
     }
 
-    public async Task MarkQuarantineUndoneAsync(long actionId, long fileId, CancellationToken cancellationToken = default)
+    public async Task RecordDirectExactDeletionAsync(
+        long fileId,
+        string originalPath,
+        string tombstonePath,
+        string sha256,
+        long fileSize,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var transaction = connection.BeginTransaction();
+        var utc = DateTime.UtcNow.ToString("O");
+
+        await using (var update = connection.CreateCommand())
+        {
+            update.Transaction = transaction;
+            update.CommandText = """
+                UPDATE Files
+                SET FullPath=$catalogPath, IsQuarantined=0, QuarantinePath='', IsMissing=1, IsDeleted=1, DeletedUtc=$utc
+                WHERE Id=$id AND FullPath=$original AND IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;
+                """;
+            update.Parameters.AddWithValue("$utc", utc);
+            update.Parameters.AddWithValue("$catalogPath", BuildInactiveCatalogPath(tombstonePath, fileId, "deleted"));
+            update.Parameters.AddWithValue("$id", fileId);
+            update.Parameters.AddWithValue("$original", Path.GetFullPath(originalPath));
+            var changed = await update.ExecuteNonQueryAsync(cancellationToken);
+            if (changed != 1)
+                throw new InvalidOperationException("Не удалось отметить точный дубль как удалённый: запись каталога изменилась.");
+        }
+
+        await using (var action = connection.CreateCommand())
+        {
+            action.Transaction = transaction;
+            action.CommandText = """
+                INSERT INTO Actions(FileId, ActionType, OriginalPath, NewPath, Sha256, FileSize, CreatedUtc, UndoneUtc, PermanentlyDeletedUtc, Error)
+                VALUES($fileId, 'DELETE_EXACT_DIRECT', $original, $new, $sha, $size, $created, NULL, $deleted, '');
+                """;
+            action.Parameters.AddWithValue("$fileId", fileId);
+            action.Parameters.AddWithValue("$original", originalPath);
+            action.Parameters.AddWithValue("$new", tombstonePath);
+            action.Parameters.AddWithValue("$sha", sha256);
+            action.Parameters.AddWithValue("$size", fileSize);
+            action.Parameters.AddWithValue("$created", utc);
+            action.Parameters.AddWithValue("$deleted", utc);
+            await action.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task MarkQuarantineUndoneAsync(
+        long actionId, long fileId,
+        long restoredLastWriteUtcTicks, long restoredCreationUtcTicks,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+        string originalPath;
+        string quarantinePath;
+
+        await using (var read = connection.CreateCommand())
+        {
+            read.Transaction = transaction;
+            read.CommandText = """
+                SELECT OriginalPath, NewPath
+                FROM Actions
+                WHERE Id=$id AND FileId=$fileId AND ActionType='QUARANTINE'
+                  AND UndoneUtc IS NULL AND PermanentlyDeletedUtc IS NULL;
+                """;
+            read.Parameters.AddWithValue("$id", actionId);
+            read.Parameters.AddWithValue("$fileId", fileId);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            if (!await reader.ReadAsync(cancellationToken))
+                throw new InvalidOperationException("Запись карантина уже отменена или не найдена.");
+            originalPath = Path.GetFullPath(reader.GetString(0));
+            quarantinePath = Path.GetFullPath(reader.GetString(1));
+        }
 
         await using (var action = connection.CreateCommand())
         {
@@ -1418,9 +1711,23 @@ public sealed class DatabaseService
             file.Transaction = transaction;
             file.CommandText = """
                 UPDATE Files
-                SET IsQuarantined=0, QuarantinePath='', IsMissing=0, IsDeleted=0, DeletedUtc=NULL
-                WHERE Id=$fileId;
+                SET FullPath=$original, FileName=$fileName, IsQuarantined=0, QuarantinePath='',
+                    IsMissing=CASE WHEN EXISTS(SELECT 1 FROM SourceFolders sf WHERE sf.Path=Files.SourceFolder) THEN 0 ELSE 1 END,
+                    IsDeleted=0, DeletedUtc=NULL,
+                    CreationUtcTicks=$creationTicks, LastWriteUtcTicks=$lastWriteTicks,
+                    HashLastWriteUtcTicks=CASE WHEN HashFileSize=FileSize AND Sha256<>'' THEN $lastWriteTicks ELSE HashLastWriteUtcTicks END,
+                    PerceptualHashLastWriteUtcTicks=CASE WHEN PerceptualHashFileSize=FileSize AND PerceptualHash<>'' THEN $lastWriteTicks ELSE PerceptualHashLastWriteUtcTicks END,
+                    QualityLastWriteUtcTicks=CASE WHEN QualityFileSize=FileSize AND QualityAlgorithmVersion>0 THEN $lastWriteTicks ELSE QualityLastWriteUtcTicks END,
+                    FaceIndexLastWriteUtcTicks=CASE WHEN FaceIndexFileSize=FileSize AND FaceIndexVersion>0 THEN $lastWriteTicks ELSE FaceIndexLastWriteUtcTicks END,
+                    GpsIndexLastWriteUtcTicks=CASE WHEN GpsIndexFileSize=FileSize AND GpsIndexVersion>0 THEN $lastWriteTicks ELSE GpsIndexLastWriteUtcTicks END,
+                    SemanticIndexLastWriteUtcTicks=CASE WHEN SemanticIndexFileSize=FileSize AND SemanticIndexVersion>0 THEN $lastWriteTicks ELSE SemanticIndexLastWriteUtcTicks END
+                WHERE Id=$fileId AND IsQuarantined=1 AND IsDeleted=0 AND QuarantinePath=$quarantine;
                 """;
+            file.Parameters.AddWithValue("$original", originalPath);
+            file.Parameters.AddWithValue("$fileName", Path.GetFileName(originalPath));
+            file.Parameters.AddWithValue("$quarantine", quarantinePath);
+            file.Parameters.AddWithValue("$creationTicks", restoredCreationUtcTicks);
+            file.Parameters.AddWithValue("$lastWriteTicks", restoredLastWriteUtcTicks);
             file.Parameters.AddWithValue("$fileId", fileId);
             var changed = await file.ExecuteNonQueryAsync(cancellationToken);
             if (changed != 1)
@@ -1479,10 +1786,11 @@ public sealed class DatabaseService
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT Id, FileId, OriginalPath, NewPath, Sha256, FileSize, CreatedUtc, UndoneUtc, PermanentlyDeletedUtc, Error
-            FROM Actions
-            WHERE ActionType='QUARANTINE'
-            ORDER BY CASE WHEN UndoneUtc IS NULL AND PermanentlyDeletedUtc IS NULL THEN 0 ELSE 1 END, Id DESC;
+            SELECT a.Id, a.FileId, a.OriginalPath, a.NewPath, a.Sha256, a.FileSize, a.OriginalLastWriteUtcTicks, a.OriginalCreationUtcTicks, a.CreatedUtc, a.UndoneUtc, a.PermanentlyDeletedUtc, a.Error, f.SourceFolder
+            FROM Actions a
+            INNER JOIN Files f ON f.Id=a.FileId
+            WHERE a.ActionType='QUARANTINE'
+            ORDER BY CASE WHEN a.UndoneUtc IS NULL AND a.PermanentlyDeletedUtc IS NULL THEN 0 ELSE 1 END, a.Id DESC;
             """;
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -1496,10 +1804,13 @@ public sealed class DatabaseService
                 QuarantinePath = reader.GetString(3),
                 Sha256 = reader.GetString(4),
                 FileSize = reader.GetInt64(5),
-                CreatedUtc = reader.GetString(6),
-                UndoneUtc = reader.IsDBNull(7) ? null : reader.GetString(7),
-                PermanentlyDeletedUtc = reader.IsDBNull(8) ? null : reader.GetString(8),
-                Error = reader.GetString(9)
+                OriginalLastWriteUtcTicks = reader.GetInt64(6),
+                OriginalCreationUtcTicks = reader.GetInt64(7),
+                CreatedUtc = reader.GetString(8),
+                UndoneUtc = reader.IsDBNull(9) ? null : reader.GetString(9),
+                PermanentlyDeletedUtc = reader.IsDBNull(10) ? null : reader.GetString(10),
+                Error = reader.GetString(11),
+                OriginalSourceFolder = reader.GetString(12)
             });
         }
         return result;
@@ -1514,7 +1825,7 @@ public sealed class DatabaseService
         await using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT Id, FullPath, FileName, ThumbnailPath, FileSize, LastWriteUtcTicks, Orientation, CaptureDate,
-                   FaceIndexVersion, FaceIndexFileSize, FaceIndexLastWriteUtcTicks, FaceIndexError,
+                   FaceIndexVersion, FaceIndexOrientationVersion, FaceIndexFileSize, FaceIndexLastWriteUtcTicks, FaceIndexError,
                    (SELECT COUNT(*) FROM DetectedFaces df WHERE df.FileId=Files.Id AND df.IsIgnored=0)
             FROM Files
             WHERE IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0 AND FileSize>0
@@ -1534,10 +1845,11 @@ public sealed class DatabaseService
                 Orientation = reader.GetInt32(6),
                 CaptureDate = reader.IsDBNull(7) ? null : reader.GetString(7),
                 FaceIndexVersion = reader.GetInt32(8),
-                FaceIndexFileSize = reader.GetInt64(9),
-                FaceIndexLastWriteUtcTicks = reader.GetInt64(10),
-                FaceIndexError = reader.GetString(11),
-                CachedFaceCount = checked((int)reader.GetInt64(12))
+                FaceIndexOrientationVersion = reader.GetInt32(9),
+                FaceIndexFileSize = reader.GetInt64(10),
+                FaceIndexLastWriteUtcTicks = reader.GetInt64(11),
+                FaceIndexError = reader.GetString(12),
+                CachedFaceCount = checked((int)reader.GetInt64(13))
             });
         }
         return result;
@@ -1553,24 +1865,13 @@ public sealed class DatabaseService
         return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken));
     }
 
-    public async Task<List<string>> GetFaceThumbnailPathsForFileAsync(long fileId, CancellationToken cancellationToken = default)
-    {
-        var result = new List<string>();
-        await using var connection = CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT ThumbnailPath FROM DetectedFaces WHERE FileId=$id AND ThumbnailPath<>'';";
-        command.Parameters.AddWithValue("$id", fileId);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken)) result.Add(reader.GetString(0));
-        return result;
-    }
-
-    public async Task ReplaceDetectedFacesAsync(
+    public async Task<List<string>> ReplaceDetectedFacesAsync(
         long fileId,
         long fileSize,
         long lastWriteUtcTicks,
         int algorithmVersion,
+        int orientation,
+        int previousOrientationVersion,
         IReadOnlyList<DetectedFaceDraft> faces,
         CancellationToken cancellationToken = default)
     {
@@ -1578,16 +1879,102 @@ public sealed class DatabaseService
         await connection.OpenAsync(cancellationToken);
         await using var transaction = connection.BeginTransaction();
 
-        await using (var delete = connection.CreateCommand())
+        // Refresh the per-file face index without blindly destroying user curation. Reusing the
+        // old row Id for a confidently matched face preserves PersonId, IsIgnored, pinned covers
+        // and FaceIgnoreActionItems. This matters for cache migrations (including schema 19) and
+        // for ordinary re-indexing after metadata/code changes.
+        var existing = new List<ExistingFaceRefreshState>();
+        await using (var readExisting = connection.CreateCommand())
         {
-            delete.Transaction = transaction;
-            delete.CommandText = "DELETE FROM DetectedFaces WHERE FileId=$fileId;";
-            delete.Parameters.AddWithValue("$fileId", fileId);
-            await delete.ExecuteNonQueryAsync(cancellationToken);
+            readExisting.Transaction = transaction;
+            readExisting.CommandText = """
+                SELECT df.Id, df.PersonId, df.IsIgnored, df.X, df.Y, df.Width, df.Height, df.ImageWidth, df.ImageHeight,
+                       df.Embedding, df.ThumbnailPath,
+                       CASE WHEN EXISTS(SELECT 1 FROM People pr WHERE pr.RepresentativeFaceId=df.Id) THEN 1 ELSE 0 END,
+                       COALESCE(p.IsAuto,1), COALESCE(p.Name,'')
+                FROM DetectedFaces df
+                LEFT JOIN People p ON p.Id=df.PersonId
+                WHERE df.FileId=$id
+                ORDER BY df.Id;
+                """;
+            readExisting.Parameters.AddWithValue("$id", fileId);
+            await using var reader = await readExisting.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                existing.Add(new ExistingFaceRefreshState(
+                    reader.GetInt64(0),
+                    reader.IsDBNull(1) ? null : reader.GetInt64(1),
+                    reader.GetInt32(2) != 0,
+                    reader.GetInt32(3),
+                    reader.GetInt32(4),
+                    reader.GetInt32(5),
+                    reader.GetInt32(6),
+                    reader.GetInt32(7),
+                    reader.GetInt32(8),
+                    BytesToFloatArray((byte[])reader[9]),
+                    reader.GetString(10),
+                    reader.GetInt32(11) != 0,
+                    reader.GetInt32(12) != 0,
+                    reader.GetString(13)));
+            }
         }
 
-        foreach (var face in faces)
+        var oldThumbnailPaths = existing
+            .Select(x => x.ThumbnailPath)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var matches = MatchFacesForRefresh(existing, faces, orientation, previousOrientationVersion);
+        var matchedExisting = new HashSet<long>(matches.Select(x => x.Existing.Id));
+        var matchedDrafts = new HashSet<int>(matches.Select(x => x.DraftIndex));
+
+        foreach (var match in matches)
         {
+            var face = faces[match.DraftIndex];
+
+            // An unnamed automatic cluster is disposable. If a refreshed face leaves such a cluster,
+            // do not leave People.RepresentativeFaceId pointing at a face that no longer belongs to it.
+            // Named/manual groups keep their PersonId and therefore keep their explicit cover.
+            if (!match.Existing.PreservePersonAssignment && match.Existing.IsRepresentative)
+            {
+                await using var clearAutoCover = connection.CreateCommand();
+                clearAutoCover.Transaction = transaction;
+                clearAutoCover.CommandText = "UPDATE People SET RepresentativeFaceId=NULL, UpdatedUtc=$utc WHERE RepresentativeFaceId=$faceId;";
+                clearAutoCover.Parameters.AddWithValue("$faceId", match.Existing.Id);
+                clearAutoCover.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+                await clearAutoCover.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using var updateFace = connection.CreateCommand();
+            updateFace.Transaction = transaction;
+            updateFace.CommandText = """
+                UPDATE DetectedFaces
+                SET PersonId=CASE WHEN $preservePerson=1 THEN PersonId ELSE NULL END,
+                    X=$x, Y=$y, Width=$w, Height=$h, ImageWidth=$iw, ImageHeight=$ih,
+                    QualityScore=$quality, Embedding=$embedding, ThumbnailPath=$thumb
+                WHERE Id=$faceId AND FileId=$fileId;
+                """;
+            updateFace.Parameters.AddWithValue("$preservePerson", match.Existing.PreservePersonAssignment ? 1 : 0);
+            updateFace.Parameters.AddWithValue("$x", face.X);
+            updateFace.Parameters.AddWithValue("$y", face.Y);
+            updateFace.Parameters.AddWithValue("$w", face.Width);
+            updateFace.Parameters.AddWithValue("$h", face.Height);
+            updateFace.Parameters.AddWithValue("$iw", face.ImageWidth);
+            updateFace.Parameters.AddWithValue("$ih", face.ImageHeight);
+            updateFace.Parameters.AddWithValue("$quality", face.QualityScore);
+            updateFace.Parameters.Add("$embedding", SqliteType.Blob).Value = FloatArrayToBytes(face.Embedding);
+            updateFace.Parameters.AddWithValue("$thumb", face.ThumbnailPath ?? "");
+            updateFace.Parameters.AddWithValue("$faceId", match.Existing.Id);
+            updateFace.Parameters.AddWithValue("$fileId", fileId);
+            if (await updateFace.ExecuteNonQueryAsync(cancellationToken) != 1)
+                throw new InvalidOperationException("Не удалось обновить сопоставленное лицо в индексе.");
+        }
+
+        for (var i = 0; i < faces.Count; i++)
+        {
+            if (matchedDrafts.Contains(i)) continue;
+            var face = faces[i];
             await using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
             insert.CommandText = """
@@ -1610,27 +1997,73 @@ public sealed class DatabaseService
             await insert.ExecuteNonQueryAsync(cancellationToken);
         }
 
+        // Faces that genuinely disappeared are removed. Clear pinned-cover pointers first and
+        // prune undo-item references so the UI cannot offer an undo for a detection that no longer
+        // exists. Named/manual People rows are deliberately retained even if this was their last face.
+        foreach (var old in existing)
+        {
+            if (matchedExisting.Contains(old.Id)) continue;
+
+            await using (var clearCover = connection.CreateCommand())
+            {
+                clearCover.Transaction = transaction;
+                clearCover.CommandText = "UPDATE People SET RepresentativeFaceId=NULL, UpdatedUtc=$utc WHERE RepresentativeFaceId=$faceId;";
+                clearCover.Parameters.AddWithValue("$faceId", old.Id);
+                clearCover.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+                await clearCover.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var pruneUndo = connection.CreateCommand())
+            {
+                pruneUndo.Transaction = transaction;
+                pruneUndo.CommandText = "DELETE FROM FaceIgnoreActionItems WHERE FaceId=$faceId;";
+                pruneUndo.Parameters.AddWithValue("$faceId", old.Id);
+                await pruneUndo.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var deleteFace = connection.CreateCommand())
+            {
+                deleteFace.Transaction = transaction;
+                deleteFace.CommandText = "DELETE FROM DetectedFaces WHERE Id=$faceId AND FileId=$fileId;";
+                deleteFace.Parameters.AddWithValue("$faceId", old.Id);
+                deleteFace.Parameters.AddWithValue("$fileId", fileId);
+                await deleteFace.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+
+        await using (var cleanupAutoGroups = connection.CreateCommand())
+        {
+            cleanupAutoGroups.Transaction = transaction;
+            cleanupAutoGroups.CommandText = "DELETE FROM People WHERE IsAuto=1 AND TRIM(Name)='' AND NOT EXISTS(SELECT 1 FROM DetectedFaces df WHERE df.PersonId=People.Id);";
+            await cleanupAutoGroups.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         await using (var update = connection.CreateCommand())
         {
             update.Transaction = transaction;
             update.CommandText = """
                 UPDATE Files
                 SET FaceIndexVersion=$version,
+                    FaceIndexOrientationVersion=$orientationVersion,
                     FaceIndexFileSize=$size,
                     FaceIndexLastWriteUtcTicks=$ticks,
                     FaceIndexError='',
                     FaceIndexedUtc=$utc
-                WHERE Id=$id;
+                WHERE Id=$id AND FileSize=$size AND LastWriteUtcTicks=$ticks
+                  AND IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;
                 """;
             update.Parameters.AddWithValue("$version", algorithmVersion);
+            update.Parameters.AddWithValue("$orientationVersion", FaceIndexCandidate.CurrentOrientationVersion);
             update.Parameters.AddWithValue("$size", fileSize);
             update.Parameters.AddWithValue("$ticks", lastWriteUtcTicks);
             update.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
             update.Parameters.AddWithValue("$id", fileId);
-            await update.ExecuteNonQueryAsync(cancellationToken);
+            if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
+                throw new IOException("Каталог изменился во время индексации лиц. Выполните анализ ещё раз.");
         }
 
         await transaction.CommitAsync(cancellationToken);
+        return oldThumbnailPaths;
     }
 
     public async Task MarkFaceIndexErrorAsync(
@@ -1651,7 +2084,8 @@ public sealed class DatabaseService
                 FaceIndexLastWriteUtcTicks=$ticks,
                 FaceIndexError=$error,
                 FaceIndexedUtc=$utc
-            WHERE Id=$id;
+            WHERE Id=$id AND FileSize=$size AND LastWriteUtcTicks=$ticks
+              AND IsMissing=0 AND IsQuarantined=0 AND IsDeleted=0;
             """;
         command.Parameters.AddWithValue("$version", algorithmVersion);
         command.Parameters.AddWithValue("$size", fileSize);
@@ -1699,7 +2133,7 @@ public sealed class DatabaseService
             JOIN Files f ON f.Id=df.FileId
             WHERE df.PersonId IS NULL AND df.IsIgnored=0
               AND f.IsMissing=0 AND f.IsQuarantined=0 AND f.IsDeleted=0
-              AND f.FaceIndexVersion=2 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks
+              AND f.FaceIndexVersion=2 AND f.FaceIndexOrientationVersion=1 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks AND f.FaceIndexError=''
               AND length(df.Embedding)>0
             ORDER BY df.QualityScore DESC, df.Id;
             """;
@@ -1775,12 +2209,12 @@ public sealed class DatabaseService
                                  FROM DetectedFaces df2 JOIN Files f2 ON f2.Id=df2.FileId
                                  WHERE df2.PersonId IS NULL AND df2.IsIgnored=0
                                    AND f2.IsMissing=0 AND f2.IsQuarantined=0 AND f2.IsDeleted=0
-                                   AND f2.FaceIndexVersion=2 AND f2.FaceIndexFileSize=f2.FileSize AND f2.FaceIndexLastWriteUtcTicks=f2.LastWriteUtcTicks
+                                   AND f2.FaceIndexVersion=2 AND f2.FaceIndexOrientationVersion=1 AND f2.FaceIndexFileSize=f2.FileSize AND f2.FaceIndexLastWriteUtcTicks=f2.LastWriteUtcTicks AND f2.FaceIndexError=''
                                  ORDER BY df2.QualityScore DESC, df2.Id LIMIT 1), '')
                 FROM DetectedFaces df JOIN Files f ON f.Id=df.FileId
                 WHERE df.PersonId IS NULL AND df.IsIgnored=0
                   AND f.IsMissing=0 AND f.IsQuarantined=0 AND f.IsDeleted=0
-                  AND f.FaceIndexVersion=2 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks;
+                  AND f.FaceIndexVersion=2 AND f.FaceIndexOrientationVersion=1 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks AND f.FaceIndexError='';
                 """;
             await using var reader = await ungrouped.ExecuteReaderAsync(cancellationToken);
             if (await reader.ReadAsync(cancellationToken) && reader.GetInt64(0) > 0)
@@ -1804,18 +2238,20 @@ public sealed class DatabaseService
                                  FROM DetectedFaces df2 JOIN Files f2 ON f2.Id=df2.FileId
                                  WHERE df2.PersonId=p.Id AND df2.IsIgnored=0
                                    AND f2.IsMissing=0 AND f2.IsQuarantined=0 AND f2.IsDeleted=0
-                                   AND f2.FaceIndexVersion=2 AND f2.FaceIndexFileSize=f2.FileSize AND f2.FaceIndexLastWriteUtcTicks=f2.LastWriteUtcTicks
-                                 ORDER BY CASE WHEN df2.Id=p.RepresentativeFaceId THEN 0 ELSE 1 END, df2.QualityScore DESC, df2.Id LIMIT 1), ''),
+                                   AND f2.FaceIndexVersion=2 AND f2.FaceIndexOrientationVersion=1 AND f2.FaceIndexFileSize=f2.FileSize AND f2.FaceIndexLastWriteUtcTicks=f2.LastWriteUtcTicks AND f2.FaceIndexError=''
+                                 ORDER BY CASE WHEN df2.Id=(
+                                     SELECT p2.RepresentativeFaceId FROM People p2 WHERE p2.Id=df2.PersonId
+                                 ) THEN 0 ELSE 1 END, df2.QualityScore DESC, df2.Id LIMIT 1), ''),
                        CASE WHEN p.RepresentativeFaceId IS NOT NULL AND EXISTS(
                            SELECT 1 FROM DetectedFaces dfr JOIN Files fr ON fr.Id=dfr.FileId
                            WHERE dfr.Id=p.RepresentativeFaceId AND dfr.PersonId=p.Id AND dfr.IsIgnored=0
                              AND fr.IsMissing=0 AND fr.IsQuarantined=0 AND fr.IsDeleted=0
-                             AND fr.FaceIndexVersion=2 AND fr.FaceIndexFileSize=fr.FileSize AND fr.FaceIndexLastWriteUtcTicks=fr.LastWriteUtcTicks
+                             AND fr.FaceIndexVersion=2 AND fr.FaceIndexOrientationVersion=1 AND fr.FaceIndexFileSize=fr.FileSize AND fr.FaceIndexLastWriteUtcTicks=fr.LastWriteUtcTicks AND fr.FaceIndexError=''
                        ) THEN p.RepresentativeFaceId ELSE NULL END AS ActiveRepresentativeFaceId
                 FROM People p
                 JOIN DetectedFaces df ON df.PersonId=p.Id AND df.IsIgnored=0
                 JOIN Files f ON f.Id=df.FileId AND f.IsMissing=0 AND f.IsQuarantined=0 AND f.IsDeleted=0
-                    AND f.FaceIndexVersion=2 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks
+                    AND f.FaceIndexVersion=2 AND f.FaceIndexOrientationVersion=1 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks AND f.FaceIndexError=''
                 GROUP BY p.Id, p.Name, p.RepresentativeFaceId
                 HAVING COUNT(df.Id)>0
                 ORDER BY CASE WHEN TRIM(p.Name)='' THEN 1 ELSE 0 END, p.Name COLLATE NOCASE, COUNT(df.Id) DESC, p.Id;
@@ -1851,7 +2287,7 @@ public sealed class DatabaseService
             JOIN Files f ON f.Id=df.FileId
             LEFT JOIN People p ON p.Id=df.PersonId
             WHERE df.IsIgnored=0 AND f.IsMissing=0 AND f.IsQuarantined=0 AND f.IsDeleted=0
-              AND f.FaceIndexVersion=2 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks
+              AND f.FaceIndexVersion=2 AND f.FaceIndexOrientationVersion=1 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks AND f.FaceIndexError=''
               AND (($personId=0 AND df.PersonId IS NULL) OR ($personId<>0 AND df.PersonId=$personId))
             ORDER BY COALESCE(f.CaptureDate,'') DESC, df.QualityScore DESC, df.Id DESC
             LIMIT $limit;
@@ -2038,6 +2474,120 @@ public sealed class DatabaseService
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task MergePersonGroupsBatchAsync(IEnumerable<long> personIds, long targetPersonId, CancellationToken cancellationToken = default)
+    {
+        var ids = personIds.Where(x => x > 0).Distinct().ToList();
+        if (ids.Count < 2 || targetPersonId <= 0 || !ids.Contains(targetPersonId))
+            throw new ArgumentException("Для массового объединения нужно выбрать минимум две существующие группы и одну из них оставить целевой.");
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+        var placeholders = ids.Select((_, i) => "$p" + i).ToArray();
+        var inClause = string.Join(",", placeholders);
+
+        await using (var check = connection.CreateCommand())
+        {
+            check.Transaction = transaction;
+            check.CommandText = $"SELECT COUNT(*) FROM People WHERE Id IN ({inClause});";
+            for (var i = 0; i < ids.Count; i++) check.Parameters.AddWithValue(placeholders[i], ids[i]);
+            if (Convert.ToInt32(await check.ExecuteScalarAsync(cancellationToken)) != ids.Count)
+                throw new InvalidOperationException("Одна или несколько выбранных групп людей больше не существуют.");
+        }
+
+        var sourceIds = ids.Where(x => x != targetPersonId).ToList();
+        var sourcePlaceholders = sourceIds.Select((_, i) => "$s" + i).ToArray();
+        var sourceClause = string.Join(",", sourcePlaceholders);
+
+        await using (var move = connection.CreateCommand())
+        {
+            move.Transaction = transaction;
+            move.CommandText = $"UPDATE DetectedFaces SET PersonId=$target WHERE PersonId IN ({sourceClause});";
+            move.Parameters.AddWithValue("$target", targetPersonId);
+            for (var i = 0; i < sourceIds.Count; i++) move.Parameters.AddWithValue(sourcePlaceholders[i], sourceIds[i]);
+            await move.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var preserve = connection.CreateCommand())
+        {
+            preserve.Transaction = transaction;
+            preserve.CommandText = $"""
+                UPDATE People
+                SET RepresentativeFaceId=COALESCE(
+                        RepresentativeFaceId,
+                        (SELECT RepresentativeFaceId FROM People WHERE Id IN ({sourceClause}) AND RepresentativeFaceId IS NOT NULL LIMIT 1)),
+                    IsAuto=0,
+                    UpdatedUtc=$utc
+                WHERE Id=$target;
+                """;
+            preserve.Parameters.AddWithValue("$target", targetPersonId);
+            preserve.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+            for (var i = 0; i < sourceIds.Count; i++) preserve.Parameters.AddWithValue(sourcePlaceholders[i], sourceIds[i]);
+            await preserve.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var delete = connection.CreateCommand())
+        {
+            delete.Transaction = transaction;
+            delete.CommandText = $"DELETE FROM People WHERE Id IN ({sourceClause});";
+            for (var i = 0; i < sourceIds.Count; i++) delete.Parameters.AddWithValue(sourcePlaceholders[i], sourceIds[i]);
+            if (await delete.ExecuteNonQueryAsync(cancellationToken) != sourceIds.Count)
+                throw new InvalidOperationException("Не удалось удалить все исходные группы после объединения.");
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<int> DeletePersonGroupsAsync(IEnumerable<long> personIds, CancellationToken cancellationToken = default)
+    {
+        var ids = personIds.Where(x => x > 0).Distinct().ToList();
+        if (ids.Count == 0) return 0;
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+        var placeholders = ids.Select((_, i) => "$p" + i).ToArray();
+        var inClause = string.Join(",", placeholders);
+
+        await using (var check = connection.CreateCommand())
+        {
+            check.Transaction = transaction;
+            check.CommandText = $"SELECT COUNT(*) FROM People WHERE Id IN ({inClause});";
+            for (var i = 0; i < ids.Count; i++) check.Parameters.AddWithValue(placeholders[i], ids[i]);
+            if (Convert.ToInt32(await check.ExecuteScalarAsync(cancellationToken)) != ids.Count)
+                throw new InvalidOperationException("Одна или несколько выбранных групп людей больше не существуют.");
+        }
+
+        int faceCount;
+        await using (var count = connection.CreateCommand())
+        {
+            count.Transaction = transaction;
+            count.CommandText = $"SELECT COUNT(*) FROM DetectedFaces WHERE PersonId IN ({inClause});";
+            for (var i = 0; i < ids.Count; i++) count.Parameters.AddWithValue(placeholders[i], ids[i]);
+            faceCount = Convert.ToInt32(await count.ExecuteScalarAsync(cancellationToken));
+        }
+
+        await using (var unassign = connection.CreateCommand())
+        {
+            unassign.Transaction = transaction;
+            unassign.CommandText = $"UPDATE DetectedFaces SET PersonId=NULL WHERE PersonId IN ({inClause});";
+            for (var i = 0; i < ids.Count; i++) unassign.Parameters.AddWithValue(placeholders[i], ids[i]);
+            await unassign.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (var delete = connection.CreateCommand())
+        {
+            delete.Transaction = transaction;
+            delete.CommandText = $"DELETE FROM People WHERE Id IN ({inClause});";
+            for (var i = 0; i < ids.Count; i++) delete.Parameters.AddWithValue(placeholders[i], ids[i]);
+            if (await delete.ExecuteNonQueryAsync(cancellationToken) != ids.Count)
+                throw new InvalidOperationException("Не удалось расформировать все выбранные группы.");
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return faceCount;
+    }
+
     public async Task<int> DeletePersonGroupAsync(long personId, CancellationToken cancellationToken = default)
     {
         if (personId <= 0) throw new ArgumentOutOfRangeException(nameof(personId));
@@ -2152,41 +2702,6 @@ public sealed class DatabaseService
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<HashSet<string>> GetProcessedReviewKeysAsync(string context, CancellationToken cancellationToken = default)
-    {
-        context = (context ?? "").Trim();
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        if (context.Length == 0) return result;
-        await using var connection = CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT ItemKey FROM ReviewStates WHERE Context=$context AND IsProcessed=1;";
-        command.Parameters.AddWithValue("$context", context);
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        while (await reader.ReadAsync(cancellationToken)) result.Add(reader.GetString(0));
-        return result;
-    }
-
-    public async Task SetReviewProcessedAsync(string context, string itemKey, bool isProcessed, CancellationToken cancellationToken = default)
-    {
-        context = (context ?? "").Trim();
-        itemKey = (itemKey ?? "").Trim();
-        if (context.Length == 0 || itemKey.Length == 0) throw new ArgumentException("Некорректная review-метка.");
-        await using var connection = CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = """
-            INSERT INTO ReviewStates(Context, ItemKey, IsProcessed, UpdatedUtc)
-            VALUES($context,$key,$processed,$utc)
-            ON CONFLICT(Context,ItemKey) DO UPDATE SET IsProcessed=excluded.IsProcessed, UpdatedUtc=excluded.UpdatedUtc;
-            """;
-        command.Parameters.AddWithValue("$context", context);
-        command.Parameters.AddWithValue("$key", itemKey);
-        command.Parameters.AddWithValue("$processed", isProcessed ? 1 : 0);
-        command.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
-        await command.ExecuteNonQueryAsync(cancellationToken);
-    }
-
     public async Task<int> IgnorePersonGroupAsync(long personId, string scopeLabel, CancellationToken cancellationToken = default)
     {
         if (personId < 0) throw new ArgumentOutOfRangeException(nameof(personId));
@@ -2260,6 +2775,108 @@ public sealed class DatabaseService
         }
         await transaction.CommitAsync(cancellationToken);
         return count;
+    }
+
+    public async Task<(int FacesIgnored, int ActionsCreated)> IgnorePersonGroupsBatchAsync(
+        IEnumerable<(long PersonId, string ScopeLabel)> groups,
+        CancellationToken cancellationToken = default)
+    {
+        var items = groups
+            .Where(x => x.PersonId >= 0)
+            .GroupBy(x => x.PersonId)
+            .Select(x => (PersonId: x.Key, ScopeLabel: x.Last().ScopeLabel))
+            .ToList();
+        if (items.Count == 0) return (0, 0);
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+        var totalFaces = 0;
+        var actionCount = 0;
+
+        foreach (var item in items)
+        {
+            var personId = item.PersonId;
+            var scopeLabel = string.IsNullOrWhiteSpace(item.ScopeLabel)
+                ? (personId == 0 ? "Без группы" : $"Человек #{personId}")
+                : item.ScopeLabel.Trim();
+            string personName = "";
+            var personIsAuto = true;
+
+            if (personId > 0)
+            {
+                await using var person = connection.CreateCommand();
+                person.Transaction = transaction;
+                person.CommandText = "SELECT Name, IsAuto FROM People WHERE Id=$id;";
+                person.Parameters.AddWithValue("$id", personId);
+                await using var reader = await person.ExecuteReaderAsync(cancellationToken);
+                if (!await reader.ReadAsync(cancellationToken))
+                    throw new InvalidOperationException($"Группа человека #{personId} больше не существует.");
+                personName = reader.GetString(0);
+                personIsAuto = reader.GetInt32(1) != 0;
+            }
+
+            long actionId;
+            await using (var action = connection.CreateCommand())
+            {
+                action.Transaction = transaction;
+                action.CommandText = """
+                    INSERT INTO FaceIgnoreActions(ScopeType,ScopeLabel,PersonId,PersonName,PersonIsAuto,CreatedUtc)
+                    VALUES('group',$label,$personId,$name,$auto,$utc);
+                    SELECT last_insert_rowid();
+                    """;
+                action.Parameters.AddWithValue("$label", scopeLabel);
+                action.Parameters.AddWithValue("$personId", personId > 0 ? (object)personId : DBNull.Value);
+                action.Parameters.AddWithValue("$name", personName);
+                action.Parameters.AddWithValue("$auto", personIsAuto ? 1 : 0);
+                action.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+                actionId = Convert.ToInt64(await action.ExecuteScalarAsync(cancellationToken));
+            }
+
+            await using (var snapshot = connection.CreateCommand())
+            {
+                snapshot.Transaction = transaction;
+                snapshot.CommandText = personId == 0
+                    ? "INSERT INTO FaceIgnoreActionItems(ActionId,FaceId,PreviousPersonId) SELECT $action,Id,PersonId FROM DetectedFaces WHERE PersonId IS NULL AND IsIgnored=0;"
+                    : "INSERT INTO FaceIgnoreActionItems(ActionId,FaceId,PreviousPersonId) SELECT $action,Id,PersonId FROM DetectedFaces WHERE PersonId=$personId AND IsIgnored=0;";
+                snapshot.Parameters.AddWithValue("$action", actionId);
+                snapshot.Parameters.AddWithValue("$personId", personId);
+                await snapshot.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            int count;
+            await using (var countCmd = connection.CreateCommand())
+            {
+                countCmd.Transaction = transaction;
+                countCmd.CommandText = "SELECT COUNT(*) FROM FaceIgnoreActionItems WHERE ActionId=$action;";
+                countCmd.Parameters.AddWithValue("$action", actionId);
+                count = Convert.ToInt32(await countCmd.ExecuteScalarAsync(cancellationToken));
+            }
+
+            if (count == 0)
+            {
+                await using var deleteEmpty = connection.CreateCommand();
+                deleteEmpty.Transaction = transaction;
+                deleteEmpty.CommandText = "DELETE FROM FaceIgnoreActions WHERE Id=$action;";
+                deleteEmpty.Parameters.AddWithValue("$action", actionId);
+                await deleteEmpty.ExecuteNonQueryAsync(cancellationToken);
+                continue;
+            }
+
+            await using (var ignore = connection.CreateCommand())
+            {
+                ignore.Transaction = transaction;
+                ignore.CommandText = "UPDATE DetectedFaces SET IsIgnored=1, PersonId=NULL WHERE Id IN (SELECT FaceId FROM FaceIgnoreActionItems WHERE ActionId=$action);";
+                ignore.Parameters.AddWithValue("$action", actionId);
+                await ignore.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            totalFaces += count;
+            actionCount++;
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return (totalFaces, actionCount);
     }
 
     public async Task<int> IgnoreFaceWithUndoAsync(long faceId, string scopeLabel, CancellationToken cancellationToken = default)
@@ -2344,7 +2961,7 @@ public sealed class DatabaseService
             action.CommandText = "SELECT PersonId,PersonName,PersonIsAuto FROM FaceIgnoreActions WHERE Id=$id AND UndoneUtc IS NULL;";
             action.Parameters.AddWithValue("$id", actionId);
             await using var reader = await action.ExecuteReaderAsync(cancellationToken);
-            if (!await reader.ReadAsync(cancellationToken)) throw new InvalidOperationException("Эта операция игнорирования уже восстановлена или не существует.");
+            if (!await reader.ReadAsync(cancellationToken)) throw new InvalidOperationException("Эта операция исключения уже восстановлена или не существует.");
             personId = reader.IsDBNull(0) ? null : reader.GetInt64(0);
             personName = reader.GetString(1);
             personIsAuto = reader.GetInt32(2) != 0;
@@ -2426,6 +3043,7 @@ public sealed class DatabaseService
     }
 
     public async Task UpdateGpsMetadataAsync(
+        SqliteConnection connection,
         long fileId,
         long fileSize,
         long lastWriteUtcTicks,
@@ -2434,8 +3052,6 @@ public sealed class DatabaseService
         string error,
         CancellationToken cancellationToken = default)
     {
-        await using var connection = CreateConnection();
-        await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
             UPDATE Files
@@ -2475,7 +3091,7 @@ public sealed class DatabaseService
                 SET CaptureDate=$date, CaptureDateSource=$source, EffectiveYear=$year
                 WHERE Id=$id AND IsDeleted=0;
                 """;
-            update.Parameters.AddWithValue("$date", captureDate.ToString("yyyy-MM-dd HH:mm:ss"));
+            update.Parameters.AddWithValue("$date", FormatStoredDateTime(captureDate));
             update.Parameters.AddWithValue("$source", CaptureDatePolicy.ManualCatalog);
             update.Parameters.AddWithValue("$year", captureDate.Year);
             update.Parameters.AddWithValue("$id", fileId);
@@ -2522,9 +3138,9 @@ public sealed class DatabaseService
             var currentValue = await read.ExecuteScalarAsync(cancellationToken);
             if (currentValue is null) continue;
             var effective = chosenDate;
-            if (preserveExistingTime && currentValue != DBNull.Value && DateTime.TryParse(Convert.ToString(currentValue), out var currentDate))
+            if (preserveExistingTime && currentValue != DBNull.Value && TryParseStoredDateTime(Convert.ToString(currentValue), out var currentDate))
                 effective = chosenDate.Date + currentDate.TimeOfDay;
-            updateDate.Value = effective.ToString("yyyy-MM-dd HH:mm:ss");
+            updateDate.Value = FormatStoredDateTime(effective);
             updateYear.Value = effective.Year;
             updateId.Value = id;
             updated += await update.ExecuteNonQueryAsync(cancellationToken);
@@ -2577,7 +3193,7 @@ public sealed class DatabaseService
             autoSource = reader.GetString(2);
         }
 
-        var year = DateTime.TryParse(autoDate, out var parsed) ? parsed.Year : 0;
+        var year = TryParseStoredDateTime(autoDate, out var parsed) ? parsed.Year : 0;
         await using (var update = connection.CreateCommand())
         {
             update.Transaction = transaction;
@@ -2670,7 +3286,7 @@ public sealed class DatabaseService
                            FROM DetectedFaces df
                            JOIN People p ON p.Id=df.PersonId
                            WHERE df.FileId=f.Id AND df.IsIgnored=0 AND p.Name<>''
-                             AND f.FaceIndexVersion=2 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks
+                             AND f.FaceIndexVersion=2 AND f.FaceIndexOrientationVersion=1 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks AND f.FaceIndexError=''
                            ORDER BY p.Id
                        )
                    ), ''),
@@ -2680,7 +3296,7 @@ public sealed class DatabaseService
                            FROM DetectedFaces df
                            JOIN People p ON p.Id=df.PersonId
                            WHERE df.FileId=f.Id AND df.IsIgnored=0 AND p.Name<>''
-                             AND f.FaceIndexVersion=2 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks
+                             AND f.FaceIndexVersion=2 AND f.FaceIndexOrientationVersion=1 AND f.FaceIndexFileSize=f.FileSize AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks AND f.FaceIndexError=''
                            ORDER BY p.Name COLLATE NOCASE
                        )
                    ), '')
@@ -2698,8 +3314,11 @@ public sealed class DatabaseService
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            if (!DateTime.TryParse(reader.GetString(4), out var captureDate))
+            if (!TryParseStoredDateTime(reader.GetString(4), out var captureDate))
+            {
+                LoggingService.Warn("Event candidate skipped because CaptureDate has an invalid storage format: fileId=" + reader.GetInt64(0));
                 continue;
+            }
 
             var ids = new HashSet<long>();
             var idText = reader.GetString(8);
@@ -2795,8 +3414,8 @@ public sealed class DatabaseService
                     SELECT last_insert_rowid();
                     """;
                 insertEvent.Parameters.AddWithValue("$name", draft.Name);
-                insertEvent.Parameters.AddWithValue("$start", draft.StartDate.ToString("yyyy-MM-dd HH:mm:ss"));
-                insertEvent.Parameters.AddWithValue("$end", draft.EndDate.ToString("yyyy-MM-dd HH:mm:ss"));
+                insertEvent.Parameters.AddWithValue("$start", FormatStoredDateTime(draft.StartDate));
+                insertEvent.Parameters.AddWithValue("$end", FormatStoredDateTime(draft.EndDate));
                 insertEvent.Parameters.AddWithValue("$confidence", draft.Confidence);
                 insertEvent.Parameters.AddWithValue("$lat", (object?)draft.CenterLatitude ?? DBNull.Value);
                 insertEvent.Parameters.AddWithValue("$lon", (object?)draft.CenterLongitude ?? DBNull.Value);
@@ -2845,7 +3464,7 @@ public sealed class DatabaseService
                            JOIN People p ON p.Id=df.PersonId
                            JOIN Files f2 ON f2.Id=ef2.FileId
                            WHERE ef2.EventId=e.Id AND p.Name<>''
-                             AND f2.FaceIndexVersion=2 AND f2.FaceIndexFileSize=f2.FileSize AND f2.FaceIndexLastWriteUtcTicks=f2.LastWriteUtcTicks
+                             AND f2.FaceIndexVersion=2 AND f2.FaceIndexOrientationVersion=1 AND f2.FaceIndexFileSize=f2.FileSize AND f2.FaceIndexLastWriteUtcTicks=f2.LastWriteUtcTicks AND f2.FaceIndexError=''
                            ORDER BY p.Name COLLATE NOCASE
                            LIMIT 8
                        )
@@ -2854,8 +3473,11 @@ public sealed class DatabaseService
                        SELECT f3.ThumbnailPath
                        FROM EventFiles ef3 JOIN Files f3 ON f3.Id=ef3.FileId
                        WHERE ef3.EventId=e.Id AND f3.IsMissing=0 AND f3.IsQuarantined=0 AND f3.IsDeleted=0
-                       ORDER BY CASE WHEN f3.Id=e.RepresentativeFileId THEN 0 ELSE 1 END,
-                                f3.IsFavorite DESC, f3.Rating DESC, COALESCE(f3.CaptureDate,'') ASC, f3.Id ASC LIMIT 1
+                       ORDER BY CASE WHEN f3.Id=(
+                                    SELECT e3.RepresentativeFileId FROM Events e3 WHERE e3.Id=ef3.EventId
+                                ) THEN 0 ELSE 1 END,
+                                CASE WHEN f3.QualityScore>=0 THEN 0 ELSE 1 END,
+                                f3.QualityScore DESC, COALESCE(f3.CaptureDate,'') ASC, f3.Id ASC LIMIT 1
                    ), '') AS RepresentativeThumbnailPath,
                    CASE WHEN e.RepresentativeFileId IS NOT NULL AND EXISTS(
                        SELECT 1 FROM EventFiles efr JOIN Files fr ON fr.Id=efr.FileId
@@ -2874,8 +3496,8 @@ public sealed class DatabaseService
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            if (!DateTime.TryParse(reader.GetString(2), out var start)) continue;
-            if (!DateTime.TryParse(reader.GetString(3), out var end)) end = start;
+            if (!TryParseStoredDateTime(reader.GetString(2), out var start)) continue;
+            if (!TryParseStoredDateTime(reader.GetString(3), out var end)) end = start;
             result.Add(new EventGroupItem
             {
                 Id = reader.GetInt64(0),
@@ -3369,11 +3991,14 @@ public sealed class DatabaseService
                            WHERE df.FileId=f.Id AND df.IsIgnored=0
                              AND p.IsAuto=0 AND TRIM(p.Name)<>''
                              AND f.FaceIndexVersion=2
+                             AND f.FaceIndexOrientationVersion=1
                              AND f.FaceIndexFileSize=f.FileSize
                              AND f.FaceIndexLastWriteUtcTicks=f.LastWriteUtcTicks
+                             AND f.FaceIndexError=''
                            ORDER BY PersonName COLLATE NOCASE
                        )
-                   ), '') AS NamedPeople
+                   ), '') AS NamedPeople,
+                   f.AutoCaptureDate, f.AutoCaptureDateSource
             FROM Files f
             LEFT JOIN EventFiles ef ON ef.FileId=f.Id
             LEFT JOIN Events e ON e.Id=ef.EventId
@@ -3403,7 +4028,9 @@ public sealed class DatabaseService
                 HashLastWriteUtcTicks = reader.GetInt64(15),
                 OriginalFileName = Path.GetFileName(reader.GetString(16)),
                 NamedPeople = reader.GetString(17)
-                    .Split('\u001f', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Split('\u001f', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                AutoCaptureDate = reader.IsDBNull(18) ? null : reader.GetString(18),
+                AutoCaptureDateSource = reader.GetString(19)
             });
         }
         return result;
@@ -3417,6 +4044,10 @@ public sealed class DatabaseService
         string newSourceFolder,
         string sha256,
         long fileSize,
+        long originalLastWriteUtcTicks,
+        long originalCreationUtcTicks,
+        long destinationLastWriteUtcTicks,
+        long destinationCreationUtcTicks,
         CancellationToken cancellationToken = default)
     {
         newSourceFolder = NormalizeDirectory(newSourceFolder);
@@ -3438,12 +4069,21 @@ public sealed class DatabaseService
             update.Transaction = transaction;
             update.CommandText = """
                 UPDATE Files
-                SET FullPath=$newPath, SourceFolder=$newSource, FileName=$fileName, IsMissing=0
+                SET FullPath=$newPath, SourceFolder=$newSource, FileName=$fileName, IsMissing=0,
+                    CreationUtcTicks=$creationTicks, LastWriteUtcTicks=$lastWriteTicks,
+                    HashLastWriteUtcTicks=CASE WHEN HashFileSize=FileSize AND Sha256<>'' THEN $lastWriteTicks ELSE HashLastWriteUtcTicks END,
+                    PerceptualHashLastWriteUtcTicks=CASE WHEN PerceptualHashFileSize=FileSize AND PerceptualHash<>'' THEN $lastWriteTicks ELSE PerceptualHashLastWriteUtcTicks END,
+                    QualityLastWriteUtcTicks=CASE WHEN QualityFileSize=FileSize AND QualityAlgorithmVersion>0 THEN $lastWriteTicks ELSE QualityLastWriteUtcTicks END,
+                    FaceIndexLastWriteUtcTicks=CASE WHEN FaceIndexFileSize=FileSize AND FaceIndexVersion>0 THEN $lastWriteTicks ELSE FaceIndexLastWriteUtcTicks END,
+                    GpsIndexLastWriteUtcTicks=CASE WHEN GpsIndexFileSize=FileSize AND GpsIndexVersion>0 THEN $lastWriteTicks ELSE GpsIndexLastWriteUtcTicks END,
+                    SemanticIndexLastWriteUtcTicks=CASE WHEN SemanticIndexFileSize=FileSize AND SemanticIndexVersion>0 THEN $lastWriteTicks ELSE SemanticIndexLastWriteUtcTicks END
                 WHERE Id=$id AND FullPath=$oldPath AND IsQuarantined=0 AND IsDeleted=0;
                 """;
             update.Parameters.AddWithValue("$newPath", Path.GetFullPath(newPath));
             update.Parameters.AddWithValue("$newSource", newSourceFolder);
             update.Parameters.AddWithValue("$fileName", Path.GetFileName(newPath));
+            update.Parameters.AddWithValue("$creationTicks", destinationCreationUtcTicks);
+            update.Parameters.AddWithValue("$lastWriteTicks", destinationLastWriteUtcTicks);
             update.Parameters.AddWithValue("$id", fileId);
             update.Parameters.AddWithValue("$oldPath", Path.GetFullPath(originalPath));
             if (await update.ExecuteNonQueryAsync(cancellationToken) != 1)
@@ -3454,8 +4094,8 @@ public sealed class DatabaseService
         {
             action.Transaction = transaction;
             action.CommandText = """
-                INSERT INTO OrganizationMoves(FileId,OriginalPath,NewPath,OriginalSourceFolder,NewSourceFolder,Sha256,FileSize,CreatedUtc,UndoneUtc,Error)
-                VALUES($fileId,$old,$new,$oldSource,$newSource,$sha,$size,$utc,NULL,'');
+                INSERT INTO OrganizationMoves(FileId,OriginalPath,NewPath,OriginalSourceFolder,NewSourceFolder,Sha256,FileSize,OriginalLastWriteUtcTicks,OriginalCreationUtcTicks,CreatedUtc,UndoneUtc,Error)
+                VALUES($fileId,$old,$new,$oldSource,$newSource,$sha,$size,$originalLastWrite,$originalCreation,$utc,NULL,'');
                 """;
             action.Parameters.AddWithValue("$fileId", fileId);
             action.Parameters.AddWithValue("$old", Path.GetFullPath(originalPath));
@@ -3464,6 +4104,8 @@ public sealed class DatabaseService
             action.Parameters.AddWithValue("$newSource", newSourceFolder);
             action.Parameters.AddWithValue("$sha", sha256);
             action.Parameters.AddWithValue("$size", fileSize);
+            action.Parameters.AddWithValue("$originalLastWrite", originalLastWriteUtcTicks);
+            action.Parameters.AddWithValue("$originalCreation", originalCreationUtcTicks);
             action.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
             await action.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -3478,7 +4120,7 @@ public sealed class DatabaseService
         await connection.OpenAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT Id,FileId,OriginalPath,NewPath,OriginalSourceFolder,NewSourceFolder,Sha256,FileSize,CreatedUtc,UndoneUtc,Error
+            SELECT Id,FileId,OriginalPath,NewPath,OriginalSourceFolder,NewSourceFolder,Sha256,FileSize,OriginalLastWriteUtcTicks,OriginalCreationUtcTicks,CreatedUtc,UndoneUtc,Error
             FROM OrganizationMoves
             ORDER BY CASE WHEN UndoneUtc IS NULL THEN 0 ELSE 1 END, Id DESC
             LIMIT 5000;
@@ -3490,13 +4132,17 @@ public sealed class DatabaseService
             {
                 Id=reader.GetInt64(0), FileId=reader.GetInt64(1), OriginalPath=reader.GetString(2), NewPath=reader.GetString(3),
                 OriginalSourceFolder=reader.GetString(4), NewSourceFolder=reader.GetString(5), Sha256=reader.GetString(6), FileSize=reader.GetInt64(7),
-                CreatedUtc=reader.GetString(8), UndoneUtc=reader.IsDBNull(9)?null:reader.GetString(9), Error=reader.GetString(10)
+                OriginalLastWriteUtcTicks=reader.GetInt64(8), OriginalCreationUtcTicks=reader.GetInt64(9),
+                CreatedUtc=reader.GetString(10), UndoneUtc=reader.IsDBNull(11)?null:reader.GetString(11), Error=reader.GetString(12)
             });
         }
         return result;
     }
 
-    public async Task MarkOrganizationMoveUndoneAsync(long actionId, long fileId, CancellationToken cancellationToken = default)
+    public async Task MarkOrganizationMoveUndoneAsync(
+        long actionId, long fileId,
+        long restoredLastWriteUtcTicks, long restoredCreationUtcTicks,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = CreateConnection();
         await connection.OpenAsync(cancellationToken);
@@ -3532,12 +4178,22 @@ public sealed class DatabaseService
         {
             file.Transaction = transaction;
             file.CommandText = """
-                UPDATE Files SET FullPath=$old,SourceFolder=$source,FileName=$name,IsMissing=0
+                UPDATE Files
+                SET FullPath=$old,SourceFolder=$source,FileName=$name,IsMissing=0,
+                    CreationUtcTicks=$creationTicks, LastWriteUtcTicks=$lastWriteTicks,
+                    HashLastWriteUtcTicks=CASE WHEN HashFileSize=FileSize AND Sha256<>'' THEN $lastWriteTicks ELSE HashLastWriteUtcTicks END,
+                    PerceptualHashLastWriteUtcTicks=CASE WHEN PerceptualHashFileSize=FileSize AND PerceptualHash<>'' THEN $lastWriteTicks ELSE PerceptualHashLastWriteUtcTicks END,
+                    QualityLastWriteUtcTicks=CASE WHEN QualityFileSize=FileSize AND QualityAlgorithmVersion>0 THEN $lastWriteTicks ELSE QualityLastWriteUtcTicks END,
+                    FaceIndexLastWriteUtcTicks=CASE WHEN FaceIndexFileSize=FileSize AND FaceIndexVersion>0 THEN $lastWriteTicks ELSE FaceIndexLastWriteUtcTicks END,
+                    GpsIndexLastWriteUtcTicks=CASE WHEN GpsIndexFileSize=FileSize AND GpsIndexVersion>0 THEN $lastWriteTicks ELSE GpsIndexLastWriteUtcTicks END,
+                    SemanticIndexLastWriteUtcTicks=CASE WHEN SemanticIndexFileSize=FileSize AND SemanticIndexVersion>0 THEN $lastWriteTicks ELSE SemanticIndexLastWriteUtcTicks END
                 WHERE Id=$fileId AND FullPath=$new AND IsQuarantined=0 AND IsDeleted=0;
                 """;
             file.Parameters.AddWithValue("$old", originalPath);
             file.Parameters.AddWithValue("$source", originalSource);
             file.Parameters.AddWithValue("$name", Path.GetFileName(originalPath));
+            file.Parameters.AddWithValue("$creationTicks", restoredCreationUtcTicks);
+            file.Parameters.AddWithValue("$lastWriteTicks", restoredLastWriteUtcTicks);
             file.Parameters.AddWithValue("$fileId", fileId);
             file.Parameters.AddWithValue("$new", newPath);
             if (await file.ExecuteNonQueryAsync(cancellationToken) != 1) throw new InvalidOperationException("Каталог PAM не совпадает с журналом Undo.");
@@ -3554,6 +4210,248 @@ public sealed class DatabaseService
         }
 
         await transaction.CommitAsync(cancellationToken);
+    }
+
+    private sealed record ExistingFaceRefreshState(
+        long Id,
+        long? PersonId,
+        bool IsIgnored,
+        int X,
+        int Y,
+        int Width,
+        int Height,
+        int ImageWidth,
+        int ImageHeight,
+        float[] Embedding,
+        string ThumbnailPath,
+        bool IsRepresentative,
+        bool PersonIsAuto,
+        string PersonName)
+    {
+        public bool PreservePersonAssignment => PersonId.HasValue && (!PersonIsAuto || !string.IsNullOrWhiteSpace(PersonName));
+        public bool HasCuratedState => PreservePersonAssignment || IsIgnored || IsRepresentative;
+        public double AreaRatio => Width > 0 && Height > 0 && ImageWidth > 0 && ImageHeight > 0
+            ? Width * (double)Height / Math.Max(1.0, ImageWidth * (double)ImageHeight)
+            : 0;
+    }
+
+    private sealed record FaceRefreshMatch(ExistingFaceRefreshState Existing, int DraftIndex, double Similarity);
+
+    private sealed record FaceRefreshCandidate(int ExistingIndex, int DraftIndex, double Similarity, double AreaSimilarity);
+
+    private static List<FaceRefreshMatch> MatchFacesForRefresh(
+        IReadOnlyList<ExistingFaceRefreshState> existing,
+        IReadOnlyList<DetectedFaceDraft> drafts,
+        int orientation,
+        int previousOrientationVersion)
+    {
+        var result = new List<FaceRefreshMatch>();
+        if (existing.Count == 0 || drafts.Count == 0) return result;
+
+        var candidates = new List<FaceRefreshCandidate>();
+        for (var oi = 0; oi < existing.Count; oi++)
+        {
+            var old = existing[oi];
+            if (old.Embedding.Length < 64) continue;
+            for (var ni = 0; ni < drafts.Count; ni++)
+            {
+                var fresh = drafts[ni];
+                if (fresh.Embedding.Length != old.Embedding.Length || fresh.Embedding.Length < 64) continue;
+
+                var oldArea = old.AreaRatio;
+                var newArea = fresh.Width > 0 && fresh.Height > 0 && fresh.ImageWidth > 0 && fresh.ImageHeight > 0
+                    ? fresh.Width * (double)fresh.Height / Math.Max(1.0, fresh.ImageWidth * (double)fresh.ImageHeight)
+                    : 0;
+                var areaSimilarity = oldArea > 0 && newArea > 0
+                    ? Math.Min(oldArea, newArea) / Math.Max(oldArea, newArea)
+                    : 0;
+                if (areaSimilarity < 0.35) continue;
+
+                var similarity = CosineNormalized(old.Embedding, fresh.Embedding);
+                if (similarity < 0.25) continue;
+                candidates.Add(new FaceRefreshCandidate(oi, ni, similarity, areaSimilarity));
+            }
+        }
+        if (candidates.Count > 0)
+        {
+            // Mutual-best matching plus a uniqueness margin keeps manual person assignments from
+            // jumping between two similar-looking people in the same group photo. A one-face photo
+            // can use a lower threshold because there is no competing identity inside the file.
+            var byOld = candidates.GroupBy(x => x.ExistingIndex)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Similarity).ThenByDescending(x => x.AreaSimilarity).ToArray());
+            var byNew = candidates.GroupBy(x => x.DraftIndex)
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Similarity).ThenByDescending(x => x.AreaSimilarity).ToArray());
+
+            foreach (var candidate in candidates
+                         .OrderByDescending(x => x.Similarity)
+                         .ThenByDescending(x => x.AreaSimilarity))
+            {
+                var old = existing[candidate.ExistingIndex];
+                var oldList = byOld[candidate.ExistingIndex];
+                var newList = byNew[candidate.DraftIndex];
+                if (oldList[0].DraftIndex != candidate.DraftIndex || newList[0].ExistingIndex != candidate.ExistingIndex)
+                    continue;
+
+                var singlePair = existing.Count == 1 && drafts.Count == 1;
+                var minimumSimilarity = singlePair ? 0.30 : old.HasCuratedState ? 0.42 : 0.36;
+                if (candidate.Similarity < minimumSimilarity) continue;
+
+                if (old.HasCuratedState && !singlePair && candidate.Similarity < 0.68)
+                {
+                    var oldSecond = oldList.Length > 1 ? oldList[1].Similarity : -1.0;
+                    var newSecond = newList.Length > 1 ? newList[1].Similarity : -1.0;
+                    if (candidate.Similarity - oldSecond < 0.055 || candidate.Similarity - newSecond < 0.055)
+                        continue;
+                }
+
+                result.Add(new FaceRefreshMatch(old, candidate.DraftIndex, candidate.Similarity));
+            }
+        }
+
+        // Schema 19 invalidates old face caches for mirrored EXIF orientations 2/4/5/7.
+        // Those legacy crops were made before the mirror/transpose was applied, so an SFace
+        // embedding can legitimately move enough to miss the conservative identity threshold.
+        // For *curated* unmatched faces only, use the deterministic EXIF geometry transform as a
+        // second chance.  Requiring mutual-best spatial overlap prevents a manual person assignment
+        // from jumping to another face in a crowded photo.
+        if (previousOrientationVersion < FaceIndexCandidate.CurrentOrientationVersion &&
+            orientation is 2 or 4 or 5 or 7)
+        {
+            AddMirroredOrientationGeometryMatches(existing, drafts, orientation, result);
+        }
+
+        return result;
+    }
+
+    private static void AddMirroredOrientationGeometryMatches(
+        IReadOnlyList<ExistingFaceRefreshState> existing,
+        IReadOnlyList<DetectedFaceDraft> drafts,
+        int orientation,
+        List<FaceRefreshMatch> matches)
+    {
+        var usedOld = matches.Select(x => x.Existing.Id).ToHashSet();
+        var usedNew = matches.Select(x => x.DraftIndex).ToHashSet();
+        var candidates = new List<(int OldIndex, int NewIndex, double Score, double Iou, double CenterDistance)>();
+
+        for (var oi = 0; oi < existing.Count; oi++)
+        {
+            var old = existing[oi];
+            if (usedOld.Contains(old.Id) || !old.HasCuratedState) continue;
+            var mapped = MapLegacyFaceRectToCurrentOrientation(old, orientation);
+            if (mapped is null) continue;
+
+            for (var ni = 0; ni < drafts.Count; ni++)
+            {
+                if (usedNew.Contains(ni)) continue;
+                var fresh = NormalizeFaceRect(drafts[ni]);
+                if (fresh is null) continue;
+
+                var iou = RectIou(mapped.Value, fresh.Value);
+                var dx = mapped.Value.Cx - fresh.Value.Cx;
+                var dy = mapped.Value.Cy - fresh.Value.Cy;
+                var centerDistance = Math.Sqrt(dx * dx + dy * dy);
+                var areaSimilarity = Math.Min(mapped.Value.Area, fresh.Value.Area) / Math.Max(mapped.Value.Area, fresh.Value.Area);
+                if (areaSimilarity < 0.30) continue;
+                if (iou < 0.18 && centerDistance > 0.075) continue;
+
+                var centerScore = Math.Max(0.0, 1.0 - centerDistance / 0.14);
+                var score = 0.68 * iou + 0.22 * centerScore + 0.10 * areaSimilarity;
+                if (score >= 0.42) candidates.Add((oi, ni, score, iou, centerDistance));
+            }
+        }
+
+        if (candidates.Count == 0) return;
+        var byOld = candidates.GroupBy(x => x.OldIndex).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Score).ToArray());
+        var byNew = candidates.GroupBy(x => x.NewIndex).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Score).ToArray());
+
+        foreach (var c in candidates.OrderByDescending(x => x.Score))
+        {
+            if (usedOld.Contains(existing[c.OldIndex].Id) || usedNew.Contains(c.NewIndex)) continue;
+            if (byOld[c.OldIndex][0].NewIndex != c.NewIndex || byNew[c.NewIndex][0].OldIndex != c.OldIndex) continue;
+
+            // When another spatial candidate is almost as good, ambiguity is safer than silently
+            // transferring a user's manual label/ignore state to the wrong person.
+            var oldSecond = byOld[c.OldIndex].Length > 1 ? byOld[c.OldIndex][1].Score : -1.0;
+            var newSecond = byNew[c.NewIndex].Length > 1 ? byNew[c.NewIndex][1].Score : -1.0;
+            if (c.Score - oldSecond < 0.08 || c.Score - newSecond < 0.08) continue;
+
+            var old = existing[c.OldIndex];
+            matches.Add(new FaceRefreshMatch(old, c.NewIndex, c.Score));
+            usedOld.Add(old.Id);
+            usedNew.Add(c.NewIndex);
+        }
+    }
+
+    private readonly record struct NormalizedFaceRect(double Left, double Top, double Right, double Bottom)
+    {
+        public double Area => Math.Max(0, Right - Left) * Math.Max(0, Bottom - Top);
+        public double Cx => (Left + Right) * 0.5;
+        public double Cy => (Top + Bottom) * 0.5;
+    }
+
+    private static NormalizedFaceRect? NormalizeFaceRect(DetectedFaceDraft face)
+    {
+        if (face.ImageWidth <= 0 || face.ImageHeight <= 0 || face.Width <= 0 || face.Height <= 0) return null;
+        return ClampRect(new NormalizedFaceRect(
+            face.X / (double)face.ImageWidth,
+            face.Y / (double)face.ImageHeight,
+            (face.X + face.Width) / (double)face.ImageWidth,
+            (face.Y + face.Height) / (double)face.ImageHeight));
+    }
+
+    private static NormalizedFaceRect? MapLegacyFaceRectToCurrentOrientation(ExistingFaceRefreshState face, int orientation)
+    {
+        if (face.ImageWidth <= 0 || face.ImageHeight <= 0 || face.Width <= 0 || face.Height <= 0) return null;
+        var x1 = face.X / (double)face.ImageWidth;
+        var y1 = face.Y / (double)face.ImageHeight;
+        var x2 = (face.X + face.Width) / (double)face.ImageWidth;
+        var y2 = (face.Y + face.Height) / (double)face.ImageHeight;
+        var points = new[]
+        {
+            MapExifPoint(x1, y1, orientation), MapExifPoint(x2, y1, orientation),
+            MapExifPoint(x1, y2, orientation), MapExifPoint(x2, y2, orientation)
+        };
+        return ClampRect(new NormalizedFaceRect(
+            points.Min(p => p.X), points.Min(p => p.Y),
+            points.Max(p => p.X), points.Max(p => p.Y)));
+    }
+
+    private static (double X, double Y) MapExifPoint(double x, double y, int orientation) => orientation switch
+    {
+        2 => (1.0 - x, y),
+        4 => (x, 1.0 - y),
+        5 => (y, x),
+        7 => (1.0 - y, 1.0 - x),
+        _ => (x, y)
+    };
+
+    private static NormalizedFaceRect ClampRect(NormalizedFaceRect r) => new(
+        Math.Clamp(r.Left, 0.0, 1.0), Math.Clamp(r.Top, 0.0, 1.0),
+        Math.Clamp(r.Right, 0.0, 1.0), Math.Clamp(r.Bottom, 0.0, 1.0));
+
+    private static double RectIou(NormalizedFaceRect a, NormalizedFaceRect b)
+    {
+        var left = Math.Max(a.Left, b.Left);
+        var top = Math.Max(a.Top, b.Top);
+        var right = Math.Min(a.Right, b.Right);
+        var bottom = Math.Min(a.Bottom, b.Bottom);
+        var intersection = Math.Max(0.0, right - left) * Math.Max(0.0, bottom - top);
+        var union = a.Area + b.Area - intersection;
+        return union <= 1e-12 ? 0.0 : intersection / union;
+    }
+
+    private static double CosineNormalized(float[] a, float[] b)
+    {
+        if (a.Length == 0 || a.Length != b.Length) return -1;
+        double dot = 0, aa = 0, bb = 0;
+        for (var i = 0; i < a.Length; i++)
+        {
+            dot += a[i] * b[i];
+            aa += a[i] * a[i];
+            bb += b[i] * b[i];
+        }
+        var denom = Math.Sqrt(aa * bb);
+        return denom < 1e-12 ? -1 : dot / denom;
     }
 
     private static byte[] FloatArrayToBytes(float[] values)
@@ -3597,24 +4495,107 @@ public sealed class DatabaseService
         command.Parameters.AddWithValue("$LastSeenScanId", r.LastSeenScanId);
     }
 
-    private static async Task EnsureColumnAsync(SqliteConnection connection, string tableName, string columnName, string definition)
+    private static async Task EnsureColumnAsync(
+        SqliteConnection connection,
+        Dictionary<string, HashSet<string>> columnCache,
+        string tableName,
+        string columnName,
+        string definition)
     {
-        var exists = false;
-        await using (var check = connection.CreateCommand())
+        if (!columnCache.TryGetValue(tableName, out var columns))
         {
+            columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            await using var check = connection.CreateCommand();
             check.CommandText = $"PRAGMA table_info({tableName});";
             await using var reader = await check.ExecuteReaderAsync();
             while (await reader.ReadAsync())
+                columns.Add(reader.GetString(1));
+            columnCache[tableName] = columns;
+        }
+
+        if (columns.Contains(columnName)) return;
+
+        await ExecuteAsync(connection, $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};");
+        columns.Add(columnName);
+    }
+
+    private static string BuildInactiveCatalogPath(string physicalReferencePath, long fileId, string state)
+    {
+        var full = Path.GetFullPath(physicalReferencePath);
+        return full + $".pam-{state}-catalog-record-{fileId}";
+    }
+
+    private static async Task NormalizeLegacyStoredDatesAsync(SqliteConnection connection)
+    {
+        var files = new List<(long Id, string? CaptureDate, string? AutoCaptureDate)>();
+        await using (var readFiles = connection.CreateCommand())
+        {
+            readFiles.CommandText = "SELECT Id, CaptureDate, AutoCaptureDate FROM Files WHERE CaptureDate IS NOT NULL OR AutoCaptureDate IS NOT NULL;";
+            await using var reader = await readFiles.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
             {
-                if (!string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-                exists = true;
-                break;
+                files.Add((
+                    reader.GetInt64(0),
+                    reader.IsDBNull(1) ? null : reader.GetString(1),
+                    reader.IsDBNull(2) ? null : reader.GetString(2)));
             }
         }
 
-        if (!exists)
-            await ExecuteAsync(connection, $"ALTER TABLE {tableName} ADD COLUMN {columnName} {definition};");
+        var events = new List<(long Id, string StartDate, string EndDate)>();
+        await using (var readEvents = connection.CreateCommand())
+        {
+            readEvents.CommandText = "SELECT Id, StartDate, EndDate FROM Events;";
+            await using var reader = await readEvents.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                events.Add((reader.GetInt64(0), reader.GetString(1), reader.GetString(2)));
+        }
+
+        await using var transaction = connection.BeginTransaction();
+        foreach (var row in files)
+        {
+            var capture = row.CaptureDate;
+            var autoCapture = row.AutoCaptureDate;
+            var captureChanged = StoredDateTime.TryNormalize(capture, out var normalizedCapture) &&
+                                 !string.Equals(capture, normalizedCapture, StringComparison.Ordinal);
+            var autoChanged = StoredDateTime.TryNormalize(autoCapture, out var normalizedAuto) &&
+                              !string.Equals(autoCapture, normalizedAuto, StringComparison.Ordinal);
+            if (!captureChanged && !autoChanged) continue;
+
+            await using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE Files SET CaptureDate=$capture, AutoCaptureDate=$auto WHERE Id=$id;";
+            update.Parameters.AddWithValue("$capture", captureChanged ? normalizedCapture : (object?)capture ?? DBNull.Value);
+            update.Parameters.AddWithValue("$auto", autoChanged ? normalizedAuto : (object?)autoCapture ?? DBNull.Value);
+            update.Parameters.AddWithValue("$id", row.Id);
+            await update.ExecuteNonQueryAsync();
+        }
+
+        foreach (var row in events)
+        {
+            var startChanged = StoredDateTime.TryNormalize(row.StartDate, out var normalizedStart) &&
+                               !string.Equals(row.StartDate, normalizedStart, StringComparison.Ordinal);
+            var endChanged = StoredDateTime.TryNormalize(row.EndDate, out var normalizedEnd) &&
+                             !string.Equals(row.EndDate, normalizedEnd, StringComparison.Ordinal);
+            if (!startChanged && !endChanged) continue;
+
+            await using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = "UPDATE Events SET StartDate=$start, EndDate=$end WHERE Id=$id;";
+            update.Parameters.AddWithValue("$start", startChanged ? normalizedStart : row.StartDate);
+            update.Parameters.AddWithValue("$end", endChanged ? normalizedEnd : row.EndDate);
+            update.Parameters.AddWithValue("$id", row.Id);
+            await update.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+    }
+
+    private static async Task<int> GetUserVersionAsync(SqliteConnection connection)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA user_version;";
+        var value = await command.ExecuteScalarAsync();
+        return value is null || value is DBNull ? 0 : Convert.ToInt32(value);
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql)
@@ -3632,4 +4613,10 @@ public sealed class DatabaseService
             return fullPath;
         return fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
     }
+
+    private static string FormatStoredDateTime(DateTime value) => StoredDateTime.Format(value);
+
+    private static bool TryParseStoredDateTime(string? value, out DateTime result) =>
+        StoredDateTime.TryParse(value, out result);
+
 }

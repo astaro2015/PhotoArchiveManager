@@ -1,4 +1,4 @@
-Photo Archive Manager 1.7.1 source manifest
+Photo Archive Manager 1.15.3 source manifest
 
 SOURCE_MANIFEST.txt
 .gitignore
@@ -12,6 +12,7 @@ VERSION.txt
 src/PhotoArchiveManager/App.xaml
 src/PhotoArchiveManager/App.xaml.cs
 src/PhotoArchiveManager/Assets/PhotoArchiveManager.ico
+src/PhotoArchiveManager/Assets/PhotoArchiveManagerAbout.png
 src/PhotoArchiveManager/Assets/README.txt
 src/PhotoArchiveManager/BatchCaptureDateWindow.xaml
 src/PhotoArchiveManager/BatchCaptureDateWindow.xaml.cs
@@ -24,8 +25,6 @@ src/PhotoArchiveManager/CompareWindow.xaml.cs
 src/PhotoArchiveManager/Converters/FilePathToBitmapConverter.cs
 src/PhotoArchiveManager/Converters/MultiplyConverter.cs
 src/PhotoArchiveManager/Converters/OrientedFileToBitmapConverter.cs
-src/PhotoArchiveManager/DuplicateWizardWindow.xaml
-src/PhotoArchiveManager/DuplicateWizardWindow.xaml.cs
 src/PhotoArchiveManager/EventNameWindow.xaml
 src/PhotoArchiveManager/EventNameWindow.xaml.cs
 src/PhotoArchiveManager/EventNoteWindow.xaml
@@ -37,8 +36,10 @@ src/PhotoArchiveManager/HelpWindow.xaml
 src/PhotoArchiveManager/HelpWindow.xaml.cs
 src/PhotoArchiveManager/Infrastructure/AsyncPauseGate.cs
 src/PhotoArchiveManager/Infrastructure/AsyncRelayCommand.cs
+src/PhotoArchiveManager/Infrastructure/ExifOrientationHelper.cs
 src/PhotoArchiveManager/Infrastructure/ObservableObject.cs
 src/PhotoArchiveManager/Infrastructure/RelayCommand.cs
+src/PhotoArchiveManager/Infrastructure/StoredDateTime.cs
 src/PhotoArchiveManager/MainWindow.xaml
 src/PhotoArchiveManager/MainWindow.xaml.cs
 src/PhotoArchiveManager/Models/ArchiveYearItem.cs
@@ -47,8 +48,10 @@ src/PhotoArchiveManager/Models/BurstProgress.cs
 src/PhotoArchiveManager/Models/ByteFormatter.cs
 src/PhotoArchiveManager/Models/DetectedFaceDraft.cs
 src/PhotoArchiveManager/Models/DuplicateAnalysisStatistics.cs
-src/PhotoArchiveManager/Models/DuplicateCleanupRecommendation.cs
 src/PhotoArchiveManager/Models/DuplicateFileItem.cs
+src/PhotoArchiveManager/Models/DuplicateFolderIntersectionItem.cs
+src/PhotoArchiveManager/Models/DuplicateFolderItem.cs
+src/PhotoArchiveManager/Models/DuplicateFolderPairItem.cs
 src/PhotoArchiveManager/Models/DuplicateGroupItem.cs
 src/PhotoArchiveManager/Models/EventAnalysisProgress.cs
 src/PhotoArchiveManager/Models/EventBuildResult.cs
@@ -56,6 +59,7 @@ src/PhotoArchiveManager/Models/EventCandidate.cs
 src/PhotoArchiveManager/Models/EventDraft.cs
 src/PhotoArchiveManager/Models/EventGroupItem.cs
 src/PhotoArchiveManager/Models/EventMetadataCandidate.cs
+src/PhotoArchiveManager/Models/ExactDeleteBatchResult.cs
 src/PhotoArchiveManager/Models/ExactDuplicateProgress.cs
 src/PhotoArchiveManager/Models/FaceEmbeddingCandidate.cs
 src/PhotoArchiveManager/Models/FaceIgnoreActionItem.cs
@@ -70,14 +74,17 @@ src/PhotoArchiveManager/Models/MetadataResult.cs
 src/PhotoArchiveManager/Models/OrganizationActionItem.cs
 src/PhotoArchiveManager/Models/OrganizationBatchResult.cs
 src/PhotoArchiveManager/Models/OrganizationCandidate.cs
+src/PhotoArchiveManager/Models/OrganizationLayoutMode.cs
 src/PhotoArchiveManager/Models/OrganizationPlanItem.cs
 src/PhotoArchiveManager/Models/OrganizationProgress.cs
 src/PhotoArchiveManager/Models/PeopleGroupingResult.cs
+src/PhotoArchiveManager/Models/PerceptualHashAlgorithmInfo.cs
 src/PhotoArchiveManager/Models/PerceptualHashCandidate.cs
 src/PhotoArchiveManager/Models/PersonGroupItem.cs
 src/PhotoArchiveManager/Models/PhotoItem.cs
 src/PhotoArchiveManager/Models/PhotoQuery.cs
 src/PhotoArchiveManager/Models/PhotoRecord.cs
+src/PhotoArchiveManager/Models/QualityAlgorithmInfo.cs
 src/PhotoArchiveManager/Models/QualityMetrics.cs
 src/PhotoArchiveManager/Models/QualityProgress.cs
 src/PhotoArchiveManager/Models/QuarantineActionItem.cs
@@ -101,20 +108,24 @@ src/PhotoArchiveManager/PhotoViewerWindow.xaml
 src/PhotoArchiveManager/PhotoViewerWindow.xaml.cs
 src/PhotoArchiveManager/Services/AppPaths.cs
 src/PhotoArchiveManager/Services/BurstAnalyzer.cs
+src/PhotoArchiveManager/Services/CacheFileSafety.cs
 src/PhotoArchiveManager/Services/CaptureDatePolicy.cs
 src/PhotoArchiveManager/Services/CatalogExportService.cs
 src/PhotoArchiveManager/Services/DatabaseService.cs
 src/PhotoArchiveManager/Services/EventAnalyzer.cs
 src/PhotoArchiveManager/Services/ExactDuplicateAnalyzer.cs
+src/PhotoArchiveManager/Services/EyeOpennessAnalyzer.cs
 src/PhotoArchiveManager/Services/FaceModelService.cs
 src/PhotoArchiveManager/Services/FaceQualityAnalyzer.cs
 src/PhotoArchiveManager/Services/ImageMatLoader.cs
 src/PhotoArchiveManager/Services/LibraryScanner.cs
 src/PhotoArchiveManager/Services/LoggingService.cs
 src/PhotoArchiveManager/Services/MetadataService.cs
+src/PhotoArchiveManager/Services/OpenCvRuntimeDiagnostics.cs
 src/PhotoArchiveManager/Services/OrganizationService.cs
 src/PhotoArchiveManager/Services/PeopleAnalyzer.cs
 src/PhotoArchiveManager/Services/PerceptualHashAnalyzer.cs
+src/PhotoArchiveManager/Services/PortableSelfTest.cs
 src/PhotoArchiveManager/Services/QualityAnalyzer.cs
 src/PhotoArchiveManager/Services/QuarantineService.cs
 src/PhotoArchiveManager/Services/ThumbnailService.cs

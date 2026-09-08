@@ -9,12 +9,15 @@ public partial class PersonPickerWindow : Window
     public string Prompt { get; }
     public PersonGroupItem? SelectedGroup { get; set; }
 
-    public PersonPickerWindow(string prompt, IReadOnlyList<PersonGroupItem> groups)
+    public PersonPickerWindow(string prompt, IReadOnlyList<PersonGroupItem> groups, long? preferredGroupId = null)
     {
         InitializeComponent();
         Prompt = prompt;
         Groups = groups;
-        SelectedGroup = groups.FirstOrDefault();
+        SelectedGroup = preferredGroupId.HasValue
+            ? groups.FirstOrDefault(x => x.Id == preferredGroupId.Value)
+            : null;
+        SelectedGroup ??= groups.FirstOrDefault(x => x.IsNamed) ?? groups.FirstOrDefault();
         DataContext = this;
     }
 

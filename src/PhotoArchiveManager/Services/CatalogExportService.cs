@@ -50,7 +50,9 @@ public sealed class CatalogExportService
                        )
                    ), '') AS PeopleNames,
                    e.Id, COALESCE(e.Name,''), e.StartDate, e.EndDate, COALESCE(e.IsAuto,1),
-                   f.GpsLatitude, f.GpsLongitude, f.IsFavorite, f.Rating, f.IsMissing, f.IsQuarantined, f.QuarantinePath, f.Error
+                   f.GpsLatitude, f.GpsLongitude, f.IsMissing, f.IsQuarantined, f.QuarantinePath, f.Error,
+                   f.TechnicalScore, f.ContrastScore, f.NoiseScore, f.FaceScore, f.EyeScore, f.FacePoseScore, f.WorstFaceScore, f.QualityAlgorithmVersion,
+                   f.EyeOpennessScore, f.ClosedEyeCount, f.BlinkPenalty
             FROM Files f
             LEFT JOIN ExactCounts x ON x.Sha256=f.Sha256 AND f.Sha256<>''
             LEFT JOIN EventFiles ef ON ef.FileId=f.Id
@@ -69,7 +71,9 @@ public sealed class CatalogExportService
                 QualityScore = reader.GetDouble(15), SharpnessScore = reader.GetDouble(16), BlurScore = reader.GetDouble(17), ExposureScore = reader.GetDouble(18), ResolutionScore = reader.GetDouble(19), CompressionScore = reader.GetDouble(20), QualityNotes = reader.GetString(21),
                 Sha256 = reader.GetString(22), ExactCopies = reader.GetInt32(23), FaceCount = reader.GetInt32(24), PeopleNames = reader.GetString(25),
                 EventId = reader.IsDBNull(26) ? null : reader.GetInt64(26), EventName = reader.GetString(27), EventStartDate = reader.IsDBNull(28) ? null : reader.GetString(28), EventEndDate = reader.IsDBNull(29) ? null : reader.GetString(29), EventIsAuto = reader.GetInt32(30) != 0,
-                GpsLatitude = reader.IsDBNull(31) ? null : reader.GetDouble(31), GpsLongitude = reader.IsDBNull(32) ? null : reader.GetDouble(32), IsFavorite = reader.GetInt32(33) != 0, Rating = reader.GetInt32(34), IsMissing = reader.GetInt32(35) != 0, IsQuarantined = reader.GetInt32(36) != 0, QuarantinePath = reader.GetString(37), Error = reader.GetString(38)
+                GpsLatitude = reader.IsDBNull(31) ? null : reader.GetDouble(31), GpsLongitude = reader.IsDBNull(32) ? null : reader.GetDouble(32), IsMissing = reader.GetInt32(33) != 0, IsQuarantined = reader.GetInt32(34) != 0, QuarantinePath = reader.GetString(35), Error = reader.GetString(36),
+                TechnicalScore = reader.GetDouble(37), ContrastScore = reader.GetDouble(38), NoiseScore = reader.GetDouble(39), FaceScore = reader.GetDouble(40), EyeScore = reader.GetDouble(41), FacePoseScore = reader.GetDouble(42), WorstFaceScore = reader.GetDouble(43), QualityAlgorithmVersion = reader.GetInt32(44),
+                EyeOpennessScore = reader.GetDouble(45), ClosedEyeCount = reader.GetInt32(46), BlinkPenalty = reader.GetDouble(47)
             });
         }
         return result;
@@ -80,7 +84,7 @@ public sealed class CatalogExportService
         var payload = new
         {
             format = "Photo Archive Manager catalog export",
-            version = "1.7.1",
+            version = AppPaths.AppVersion,
             generatedUtc = DateTime.UtcNow.ToString("O"),
             photoCount = rows.Count,
             photos = rows
@@ -93,11 +97,11 @@ public sealed class CatalogExportService
     {
         await using var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
         await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), 64 * 1024);
-        await writer.WriteLineAsync("Id;FullPath;SourceFolder;FileName;Extension;FileSize;CaptureDate;CaptureDateSource;AutoCaptureDate;AutoCaptureDateSource;EffectiveYear;Width;Height;CameraMake;CameraModel;QualityScore;SharpnessScore;BlurScore;ExposureScore;ResolutionScore;CompressionScore;QualityNotes;Sha256;ExactCopies;FaceCount;People;EventId;EventName;EventStartDate;EventEndDate;EventIsAuto;GpsLatitude;GpsLongitude;IsFavorite;Rating;IsMissing;IsQuarantined;QuarantinePath;Error");
+        await writer.WriteLineAsync("Id;FullPath;SourceFolder;FileName;Extension;FileSize;CaptureDate;CaptureDateSource;AutoCaptureDate;AutoCaptureDateSource;EffectiveYear;Width;Height;CameraMake;CameraModel;QualityScore;TechnicalScore;SharpnessScore;BlurScore;ExposureScore;ContrastScore;NoiseScore;ResolutionScore;CompressionScore;FaceScore;EyeScore;EyeOpennessScore;ClosedEyeCount;BlinkPenalty;FacePoseScore;WorstFaceScore;QualityAlgorithmVersion;QualityNotes;Sha256;ExactCopies;FaceCount;People;EventId;EventName;EventStartDate;EventEndDate;EventIsAuto;GpsLatitude;GpsLongitude;IsMissing;IsQuarantined;QuarantinePath;Error");
         foreach (var r in rows)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var values = new object?[] { r.Id, r.FullPath, r.SourceFolder, r.FileName, r.Extension, r.FileSize, r.CaptureDate, r.CaptureDateSource, r.AutoCaptureDate, r.AutoCaptureDateSource, r.EffectiveYear, r.Width, r.Height, r.CameraMake, r.CameraModel, r.QualityScore, r.SharpnessScore, r.BlurScore, r.ExposureScore, r.ResolutionScore, r.CompressionScore, r.QualityNotes, r.Sha256, r.ExactCopies, r.FaceCount, r.PeopleNames, r.EventId, r.EventName, r.EventStartDate, r.EventEndDate, r.EventIsAuto, r.GpsLatitude, r.GpsLongitude, r.IsFavorite, r.Rating, r.IsMissing, r.IsQuarantined, r.QuarantinePath, r.Error };
+            var values = new object?[] { r.Id, r.FullPath, r.SourceFolder, r.FileName, r.Extension, r.FileSize, r.CaptureDate, r.CaptureDateSource, r.AutoCaptureDate, r.AutoCaptureDateSource, r.EffectiveYear, r.Width, r.Height, r.CameraMake, r.CameraModel, r.QualityScore, r.TechnicalScore, r.SharpnessScore, r.BlurScore, r.ExposureScore, r.ContrastScore, r.NoiseScore, r.ResolutionScore, r.CompressionScore, r.FaceScore, r.EyeScore, r.EyeOpennessScore, r.ClosedEyeCount, r.BlinkPenalty, r.FacePoseScore, r.WorstFaceScore, r.QualityAlgorithmVersion, r.QualityNotes, r.Sha256, r.ExactCopies, r.FaceCount, r.PeopleNames, r.EventId, r.EventName, r.EventStartDate, r.EventEndDate, r.EventIsAuto, r.GpsLatitude, r.GpsLongitude, r.IsMissing, r.IsQuarantined, r.QuarantinePath, r.Error };
             await writer.WriteLineAsync(string.Join(';', values.Select(Csv)));
         }
     }
@@ -133,11 +137,22 @@ public sealed class CatalogExportService
         public string CameraMake { get; init; } = "";
         public string CameraModel { get; init; } = "";
         public double QualityScore { get; init; }
+        public double TechnicalScore { get; init; }
         public double SharpnessScore { get; init; }
         public double BlurScore { get; init; }
         public double ExposureScore { get; init; }
+        public double ContrastScore { get; init; }
+        public double NoiseScore { get; init; }
         public double ResolutionScore { get; init; }
         public double CompressionScore { get; init; }
+        public double FaceScore { get; init; }
+        public double EyeScore { get; init; }
+        public double EyeOpennessScore { get; init; }
+        public int ClosedEyeCount { get; init; }
+        public double BlinkPenalty { get; init; }
+        public double FacePoseScore { get; init; }
+        public double WorstFaceScore { get; init; }
+        public int QualityAlgorithmVersion { get; init; }
         public string QualityNotes { get; init; } = "";
         public string Sha256 { get; init; } = "";
         public int ExactCopies { get; init; }
@@ -150,8 +165,6 @@ public sealed class CatalogExportService
         public bool EventIsAuto { get; init; }
         public double? GpsLatitude { get; init; }
         public double? GpsLongitude { get; init; }
-        public bool IsFavorite { get; init; }
-        public int Rating { get; init; }
         public bool IsMissing { get; init; }
         public bool IsQuarantined { get; init; }
         public string QuarantinePath { get; init; } = "";

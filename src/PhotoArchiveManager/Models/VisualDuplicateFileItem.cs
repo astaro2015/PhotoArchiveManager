@@ -24,15 +24,23 @@ public sealed class VisualDuplicateFileItem : ObservableObject
     public int AverageHashDistanceFromRepresentative { get; init; }
 
     public double QualityScore { get; init; } = -1;
+    public double TechnicalScore { get; init; } = -1;
     public double SharpnessScore { get; init; } = -1;
     public double BlurScore { get; init; } = -1;
     public double ExposureScore { get; init; } = -1;
+    public double ContrastScore { get; init; } = -1;
+    public double NoiseScore { get; init; } = -1;
     public double ResolutionScore { get; init; } = -1;
     public double CompressionScore { get; init; } = -1;
     public int FaceCount { get; init; } = -1;
     public int EyeCount { get; init; } = -1;
     public double FaceScore { get; init; } = -1;
     public double EyeScore { get; init; } = -1;
+    public double FacePoseScore { get; init; } = -1;
+    public double WorstFaceScore { get; init; } = -1;
+    public double EyeOpennessScore { get; init; } = -1;
+    public int ClosedEyeCount { get; init; } = -1;
+    public double BlinkPenalty { get; init; }
     public string QualityNotes { get; init; } = "";
     public bool HasQuality { get; init; }
 
@@ -47,44 +55,21 @@ public sealed class VisualDuplicateFileItem : ObservableObject
         }
     }
 
-    private bool _isManualKeeper;
-    public bool IsManualKeeper
-    {
-        get => _isManualKeeper;
-        set
-        {
-            if (!SetProperty(ref _isManualKeeper, value)) return;
-            if (value) IsMarkedForQuarantine = false;
-            OnPropertyChanged(nameof(ManualKeeperDisplay));
-            OnPropertyChanged(nameof(ReviewStatusDisplay));
-            OnPropertyChanged(nameof(CanMarkForQuarantine));
-        }
-    }
-
     private bool _isMarkedForQuarantine;
     public bool IsMarkedForQuarantine
     {
         get => _isMarkedForQuarantine;
-        set
-        {
-            if (value && IsManualKeeper) value = false;
-            if (SetProperty(ref _isMarkedForQuarantine, value))
-                OnPropertyChanged(nameof(ReviewStatusDisplay));
-        }
+        set => SetProperty(ref _isMarkedForQuarantine, value);
     }
-
-    public bool CanMarkForQuarantine => !IsManualKeeper;
-    public string ManualKeeperDisplay => IsManualKeeper ? "✓ ОСТАВИТЬ" : "";
-    public string ReviewStatusDisplay => IsManualKeeper ? "ОСТАВИТЬ" : IsMarkedForQuarantine ? "→ КАРАНТИН" : "";
 
     public double SimilarityPercent => 100.0 * (64 - Math.Clamp(DistanceFromRepresentative, 0, 64)) / 64.0;
     public string SimilarityDisplay => $"{SimilarityPercent:0.0}%";
     public string FileSizeDisplay => ByteFormatter.Format(FileSize);
     public string DimensionsDisplay => Width > 0 && Height > 0 ? $"{Width} × {Height}" : "Размер: —";
     public string MegapixelsDisplay => Width > 0 && Height > 0 ? $"{Width * (long)Height / 1_000_000.0:0.0} МП" : "—";
-    public int DisplayPixelWidth => Orientation is 6 or 8 ? Height : Width;
-    public int DisplayPixelHeight => Orientation is 6 or 8 ? Width : Height;
-    public string CaptureDateDisplay => DateTime.TryParse(CaptureDate, out var value)
+    public int DisplayPixelWidth => ExifOrientationHelper.SwapsDimensions(Orientation) ? Height : Width;
+    public int DisplayPixelHeight => ExifOrientationHelper.SwapsDimensions(Orientation) ? Width : Height;
+    public string CaptureDateDisplay => StoredDateTime.TryParse(CaptureDate, out var value)
         ? value.ToString("dd.MM.yyyy HH:mm:ss")
         : "Дата: неизвестна";
     public string CameraDisplay
@@ -103,14 +88,25 @@ public sealed class VisualDuplicateFileItem : ObservableObject
         : FaceCount == 0
             ? "лица не найдены"
             : $"лица: {FaceCount} · глаза: {Math.Max(0, EyeCount)} · лицо {FaceScore:0}/100";
+    public bool HasBlinkWarning => HasQuality && ClosedEyeCount > 0;
+    public string BlinkWarningDisplay => HasBlinkWarning
+        ? $"⚠ Вероятно закрыты глаза: {ClosedEyeCount} · доп. штраф Quality −{BlinkPenalty:0.#}"
+        : "";
     public string QualityComponentsDisplay
     {
         get
         {
             if (!HasQuality) return "Оценка качества ещё не выполнена.";
-            var baseText = $"резкость {SharpnessScore:0} · смаз {BlurScore:0} · экспозиция {ExposureScore:0} · разрешение {ResolutionScore:0} · JPEG {CompressionScore:0}";
+            var baseText = $"техника {TechnicalScore:0} · резкость {SharpnessScore:0} · смаз {BlurScore:0} · экспозиция {ExposureScore:0} · диапазон {ContrastScore:0} · шум {NoiseScore:0} · JPEG {CompressionScore:0} · сохранность {ResolutionScore:0}";
             if (FaceCount > 0)
-                return baseText + $" · лицо {FaceScore:0} · глаза {EyeScore:0}";
+            {
+                var eyeText = EyeScore >= 0 ? $" · детали глаз {EyeScore:0}" : " · детали глаз —";
+                var opennessText = EyeOpennessScore >= 0 ? $" · открытость глаз {EyeOpennessScore:0}" : " · открытость глаз —";
+                var blinkText = ClosedEyeCount > 0
+                    ? $" · вероятно закрыты {ClosedEyeCount} · доп. штраф −{BlinkPenalty:0.#}"
+                    : "";
+                return baseText + $" · лица {FaceScore:0} · худшее {WorstFaceScore:0} · поза {FacePoseScore:0}" + eyeText + opennessText + blinkText;
+            }
             return baseText;
         }
     }

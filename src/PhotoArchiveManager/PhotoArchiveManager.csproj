@@ -9,9 +9,9 @@
     <AssemblyName>PhotoArchiveManager</AssemblyName>
     <RootNamespace>PhotoArchiveManager</RootNamespace>
     <ApplicationIcon>Assets\PhotoArchiveManager.ico</ApplicationIcon>
-    <Version>1.7.1</Version>
-    <AssemblyVersion>1.7.1.0</AssemblyVersion>
-    <FileVersion>1.7.1.0</FileVersion>
+    <Version>1.15.3</Version>
+    <AssemblyVersion>1.15.3.0</AssemblyVersion>
+    <FileVersion>1.15.3.0</FileVersion>
     <Authors>Привалов Олег</Authors>
     <Company>Привалов Олег</Company>
     <Product>Photo Archive Manager</Product>
@@ -26,6 +26,7 @@
     <DebugSymbols>false</DebugSymbols>
     <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
     <RunAnalyzersDuringLiveAnalysis>false</RunAnalyzersDuringLiveAnalysis>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- OpenCvSharp 4.13 analyzer was compiled with Roslyn 4.14 while the clean-build SDK currently uses 4.11. Runtime is unaffected. -->
     <NoWarn>$(NoWarn);CS9057</NoWarn>
   </PropertyGroup>
@@ -38,23 +39,43 @@
     <Compile Remove="Services\ClipTokenizer.cs" />
     <Compile Remove="Services\RussianPhotoQueryTranslator.cs" />
     <Compile Remove="Models\Semantic*.cs" />
+    <!-- 1.12.1 removed the obsolete exact-duplicate wizard. Keep overlay builds safe
+         when a new source ZIP is unpacked over an older PAM directory. -->
+    <Compile Remove="DuplicateWizardWindow.xaml.cs" />
+    <Page Remove="DuplicateWizardWindow.xaml" />
+    <Compile Remove="Models\DuplicateCleanupRecommendation.cs" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.30" />
     <PackageReference Include="MetadataExtractor" Version="2.9.3" />
-    <!-- Direct reference suppresses the OpenCvSharp analyzer built with a newer compiler; runtime assets remain unchanged. -->
+    <!-- Keep the managed wrapper and the win-x64 native runtime explicit.
+         OpenCvSharp4.Windows is only a meta-package over these packages; using the
+         runtime directly makes portable single-file publishing deterministic. -->
     <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260627" ExcludeAssets="analyzers" />
-    <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260627" ExcludeAssets="analyzers" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260627" GeneratePathProperty="true" />
   </ItemGroup>
 
   <ItemGroup>
     <Resource Include="Assets\PhotoArchiveManager.ico" />
-    <EmbeddedResource Include="Assets\haarcascade_frontalface_default.xml" />
-    <EmbeddedResource Include="Assets\haarcascade_eye_tree_eyeglasses.xml" />
+    <Resource Include="Assets\PhotoArchiveManagerAbout.png" />
     <EmbeddedResource Include="Assets\face_recognition_sface_2021dec.onnx" />
     <EmbeddedResource Include="Assets\face_detection_yunet_2023mar.onnx" />
+    <!-- Keep a private copy of the native OpenCV bridge inside the managed PAM assembly.
+         On first run PAM extracts this copy to Data\Runtime and resolves P/Invoke from
+         there. This is deliberate defense-in-depth for portable single-EXE deployment:
+         face recognition no longer relies solely on the .NET bundle TEMP extractor. -->
+    <EmbeddedResource Include="$(PkgOpenCvSharp4_runtime_win)\runtimes\win-x64\native\OpenCvSharpExtern.dll"
+                      LogicalName="PhotoArchiveManager.Runtime.OpenCvSharpExtern.dll"
+                      Condition="'$(PkgOpenCvSharp4_runtime_win)' != '' And Exists('$(PkgOpenCvSharp4_runtime_win)\runtimes\win-x64\native\OpenCvSharpExtern.dll')" />
   </ItemGroup>
+
+  <Target Name="ValidatePortableOpenCvResource" BeforeTargets="CoreCompile">
+    <Error Condition="'$(PkgOpenCvSharp4_runtime_win)' == ''"
+           Text="NuGet package path for OpenCvSharp4.runtime.win is unavailable. Run dotnet restore (or BUILD_ON_CLEAN_WINDOWS.bat) first." />
+    <Error Condition="!Exists('$(PkgOpenCvSharp4_runtime_win)\runtimes\win-x64\native\OpenCvSharpExtern.dll')"
+           Text="OpenCvSharpExtern.dll is missing from the restored OpenCvSharp4.runtime.win package." />
+  </Target>
   <!-- Defense in depth: remove OpenCvSharp analyzers even if a transitive package adds them back. -->
   <Target Name="RemoveIncompatibleOpenCvSharpAnalyzers" BeforeTargets="CoreCompile">
     <ItemGroup>

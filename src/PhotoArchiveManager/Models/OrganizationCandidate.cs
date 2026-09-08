@@ -1,4 +1,4 @@
-namespace PhotoArchiveManager.Models;
+﻿namespace PhotoArchiveManager.Models;
 
 public sealed class OrganizationCandidate
 {
@@ -12,6 +12,8 @@ public sealed class OrganizationCandidate
     public long LastWriteUtcTicks { get; init; }
     public string? CaptureDate { get; init; }
     public string CaptureDateSource { get; init; } = "";
+    public string? AutoCaptureDate { get; init; }
+    public string AutoCaptureDateSource { get; init; } = "";
     public string EventName { get; init; } = "";
     public bool EventIsAuto { get; init; }
     public string? EventStartDate { get; init; }

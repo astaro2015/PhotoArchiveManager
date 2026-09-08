@@ -1,4 +1,4 @@
-namespace PhotoArchiveManager.Models;
+﻿namespace PhotoArchiveManager.Models;
 
 public sealed class PerceptualHashCandidate
 {
@@ -22,11 +22,15 @@ public sealed class PerceptualHashCandidate
     public long PerceptualHashFileSize { get; init; }
     public long PerceptualHashLastWriteUtcTicks { get; init; }
     public string PerceptualHashError { get; init; } = "";
+    public int PerceptualHashAlgorithmVersion { get; init; }
 
     public double QualityScore { get; init; } = -1;
+    public double TechnicalScore { get; init; } = -1;
     public double SharpnessScore { get; init; } = -1;
     public double BlurScore { get; init; } = -1;
     public double ExposureScore { get; init; } = -1;
+    public double ContrastScore { get; init; } = -1;
+    public double NoiseScore { get; init; } = -1;
     public double ResolutionScore { get; init; } = -1;
     public double CompressionScore { get; init; } = -1;
     public string QualityNotes { get; init; } = "";
@@ -38,22 +42,29 @@ public sealed class PerceptualHashCandidate
     public int EyeCount { get; init; } = -1;
     public double FaceScore { get; init; } = -1;
     public double EyeScore { get; init; } = -1;
+    public double FacePoseScore { get; init; } = -1;
+    public double WorstFaceScore { get; init; } = -1;
+    public double EyeOpennessScore { get; init; } = -1;
+    public int ClosedEyeCount { get; init; } = -1;
+    public double BlinkPenalty { get; init; }
 
+    // Only a successful hash is a reusable cache record. Decoder/codec errors are persisted for
+    // diagnostics but deliberately retried on the next explicit search: installing a local WIC
+    // codec or resolving a transient file lock must be enough to recover without touching the photo.
     public bool HasCurrentPerceptualRecord =>
         PerceptualHashFileSize == FileSize &&
         PerceptualHashLastWriteUtcTicks == LastWriteUtcTicks &&
-        ((!string.IsNullOrWhiteSpace(DHash) && !string.IsNullOrWhiteSpace(AHash)) || !string.IsNullOrWhiteSpace(PerceptualHashError));
-
-    public bool HasValidCachedHash =>
-        HasCurrentPerceptualRecord &&
+        PerceptualHashAlgorithmVersion == PerceptualHashAlgorithmInfo.CurrentVersion &&
         !string.IsNullOrWhiteSpace(DHash) &&
         !string.IsNullOrWhiteSpace(AHash) &&
         string.IsNullOrWhiteSpace(PerceptualHashError);
 
+    public bool HasValidCachedHash => HasCurrentPerceptualRecord;
+
     public bool HasCurrentQualityRecord =>
         QualityFileSize == FileSize &&
         QualityLastWriteUtcTicks == LastWriteUtcTicks &&
-        QualityAlgorithmVersion == 2 &&
+        QualityAlgorithmVersion == QualityAlgorithmInfo.CurrentVersion &&
         (QualityScore >= 0 || !string.IsNullOrWhiteSpace(QualityError));
 
     public bool HasValidCachedQuality =>

@@ -18,12 +18,27 @@ public sealed class LibraryScanner
     private CancellationTokenSource? _activeCts;
 
     public bool IsPaused => _pauseGate.IsPaused;
+    public bool HadIncompleteTraversal { get; private set; }
 
     public LibraryScanner(DatabaseService database, MetadataService metadata, ThumbnailService thumbnails)
     {
         _database = database;
         _metadata = metadata;
         _thumbnails = thumbnails;
+    }
+
+
+    private static bool IsPamInternalArtifact(string path)
+    {
+        var name = Path.GetFileName(path);
+        if (string.IsNullOrEmpty(name)) return false;
+
+        // PAM may briefly create hidden/pending files while a verified move or delete is being
+        // finalized. They must never become catalog photos, including leftovers from an older
+        // version that used the original image extension for a source tombstone.
+        return name.StartsWith(".pam-source-pending-", StringComparison.OrdinalIgnoreCase) ||
+               name.StartsWith(".pam-delete-pending-", StringComparison.OrdinalIgnoreCase) ||
+               name.Contains(".pamtmp-", StringComparison.OrdinalIgnoreCase);
     }
 
     public void Pause() => _pauseGate.Pause();
@@ -35,6 +50,7 @@ public sealed class LibraryScanner
         if (_activeCts is not null) throw new InvalidOperationException("Сканирование уже выполняется.");
         _activeCts = CancellationTokenSource.CreateLinkedTokenSource(externalCancellationToken);
         var ct = _activeCts.Token;
+        HadIncompleteTraversal = false;
 
         try
         {
@@ -60,44 +76,79 @@ public sealed class LibraryScanner
     private async Task ScanOneSourceAsync(string source, IProgress<ScanProgress>? progress, CancellationToken ct)
     {
         var scanId = Guid.NewGuid().ToString("N");
-        var files = new List<string>();
         var options = new EnumerationOptions
         {
-            RecurseSubdirectories = true,
-            IgnoreInaccessible = true,
+            RecurseSubdirectories = false,
+            IgnoreInaccessible = false,
             ReturnSpecialDirectories = false,
             AttributesToSkip = FileAttributes.ReparsePoint
         };
 
         progress?.Report(new ScanProgress("Поиск файлов", 0, 0, 0, 0, 0, source));
-        try
+
+        // Directory enumeration is synchronous. Walk it on a worker thread so a large tree cannot
+        // freeze WPF. Traverse directory-by-directory instead of using IgnoreInaccessible=true:
+        // that flag silently skips an unreadable subtree and would make its already indexed photos
+        // look deleted. Here we keep scanning other readable branches and remember that the walk was
+        // incomplete, so missing-state reconciliation is skipped for this source.
+        var enumeration = await Task.Run(async () =>
         {
-            foreach (var file in Directory.EnumerateFiles(source, "*", options))
+            var found = new List<string>();
+            var pendingDirectories = new Stack<string>();
+            pendingDirectories.Push(source);
+            var completed = true;
+
+            while (pendingDirectories.Count > 0)
             {
                 ct.ThrowIfCancellationRequested();
-                await _pauseGate.WaitIfPausedAsync(ct);
-                if (SupportedExtensions.Contains(Path.GetExtension(file)))
+                await _pauseGate.WaitIfPausedAsync(ct).ConfigureAwait(false);
+                var directory = pendingDirectories.Pop();
+
+                try
                 {
-                    files.Add(file);
-                    if (files.Count % 500 == 0)
-                        progress?.Report(new ScanProgress("Поиск файлов", files.Count, 0, 0, 0, 0, file));
+                    foreach (var file in Directory.EnumerateFiles(directory, "*", options))
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        await _pauseGate.WaitIfPausedAsync(ct).ConfigureAwait(false);
+                        if (IsPamInternalArtifact(file)) continue;
+                        if (!SupportedExtensions.Contains(Path.GetExtension(file))) continue;
+
+                        found.Add(file);
+                        if (found.Count % 500 == 0)
+                            progress?.Report(new ScanProgress("Поиск файлов", found.Count, 0, 0, 0, 0, file));
+                    }
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+                {
+                    completed = false;
+                    LoggingService.Warn($"File enumeration warning for {directory}: {ex.Message}");
+                }
+
+                try
+                {
+                    foreach (var child in Directory.EnumerateDirectories(directory, "*", options))
+                        pendingDirectories.Push(child);
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+                {
+                    completed = false;
+                    LoggingService.Warn($"Directory enumeration warning for {directory}: {ex.Message}");
                 }
             }
-        }
-        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
-        {
-            LoggingService.Warn($"Enumeration warning for {source}: {ex.Message}");
-        }
+
+            return (Files: found, Completed: completed);
+        }, ct);
+        var files = enumeration.Files;
 
         var signatures = await _database.GetSignaturesAsync(source, ct);
         var processed = 0;
         var indexed = 0;
         var skipped = 0;
-        var errors = 0;
+        var errors = enumeration.Completed ? 0 : 1;
 
         await using var connection = _database.CreateConnection();
         await connection.OpenAsync(ct);
-        SqliteTransaction transaction = connection.BeginTransaction();
+        SqliteTransaction? transaction = null;
         var batchCount = 0;
 
         try
@@ -111,17 +162,35 @@ public sealed class LibraryScanner
                 try
                 {
                     var info = new FileInfo(file);
-                    if (signatures.TryGetValue(file, out var signature) &&
-                        signature.FileSize == info.Length &&
-                        signature.LastWriteUtcTicks == info.LastWriteTimeUtc.Ticks)
+                    // Reading these properties forces FileInfo to touch the filesystem. Keep the old
+                    // signature in the missing-candidate set until that presence check has succeeded.
+                    var fileSize = info.Length;
+                    var lastWriteUtcTicks = info.LastWriteTimeUtc.Ticks;
+                    var hadSignature = signatures.TryGetValue(file, out var signature);
+
+                    // The path is physically present. From this point a metadata/decoder error is an
+                    // indexing error, not evidence that the catalog file is missing.
+                    signatures.Remove(file);
+
+                    if (hadSignature &&
+                        signature is not null &&
+                        signature.FileSize == fileSize &&
+                        signature.LastWriteUtcTicks == lastWriteUtcTicks &&
+                        !signature.HasIndexError)
                     {
-                        await _database.TouchUnchangedAsync(connection, transaction, file, scanId, ct);
                         skipped++;
                     }
                     else
                     {
                         var metadata = await Task.Run(() => _metadata.Read(file), ct);
-                        var thumbnail = await _thumbnails.CreateAsync(file, info.Length, info.LastWriteTimeUtc.Ticks, metadata.Orientation, ct);
+                        var thumbnail = await _thumbnails.CreateAsync(file, fileSize, lastWriteUtcTicks, metadata.Orientation, ct);
+
+                        // Do not commit metadata/preview assembled from a file that changed midway.
+                        // This is especially important for photos still being copied into a watched folder.
+                        info.Refresh();
+                        if (!info.Exists || info.Length != fileSize || info.LastWriteTimeUtc.Ticks != lastWriteUtcTicks)
+                            throw new IOException("Файл изменился во время индексации. Он будет обработан при следующем сканировании.");
+
                         var captureDate = metadata.CaptureDate;
                         var captureSource = metadata.CaptureDateSource;
                         if (!captureDate.HasValue)
@@ -139,10 +208,10 @@ public sealed class LibraryScanner
                             SourceFolder = source,
                             FileName = info.Name,
                             Extension = info.Extension.ToLowerInvariant(),
-                            FileSize = info.Length,
-                            LastWriteUtcTicks = info.LastWriteTimeUtc.Ticks,
+                            FileSize = fileSize,
+                            LastWriteUtcTicks = lastWriteUtcTicks,
                             CreationUtcTicks = info.CreationTimeUtc.Ticks,
-                            CaptureDate = captureDate.Value.ToString("yyyy-MM-dd HH:mm:ss"),
+                            CaptureDate = StoredDateTime.Format(captureDate.Value),
                             CaptureDateSource = captureSource,
                             EffectiveYear = captureDate.Value.Year,
                             Width = thumbnail.Width,
@@ -156,17 +225,19 @@ public sealed class LibraryScanner
                             Error = error,
                             LastSeenScanId = scanId
                         };
+
+                        transaction ??= connection.BeginTransaction();
                         await _database.UpsertPhotoAsync(connection, transaction, record, ct);
                         indexed++;
-                    }
+                        batchCount++;
 
-                    batchCount++;
-                    if (batchCount >= 200)
-                    {
-                        await transaction.CommitAsync(ct);
-                        await transaction.DisposeAsync();
-                        transaction = connection.BeginTransaction();
-                        batchCount = 0;
+                        if (batchCount >= 200)
+                        {
+                            await transaction.CommitAsync(ct);
+                            await transaction.DisposeAsync();
+                            transaction = null;
+                            batchCount = 0;
+                        }
                     }
                 }
                 catch (OperationCanceledException) { throw; }
@@ -180,11 +251,26 @@ public sealed class LibraryScanner
                     progress?.Report(new ScanProgress("Индексация", files.Count, processed, indexed, skipped, errors, file));
             }
 
-            await transaction.CommitAsync(ct);
-            await transaction.DisposeAsync();
-            transaction = null!;
-            await _database.CompleteSourceScanAsync(source, scanId, ct);
-            progress?.Report(new ScanProgress("Готово", files.Count, processed, indexed, skipped, errors, source));
+            if (transaction is not null)
+            {
+                await transaction.CommitAsync(ct);
+                await transaction.DisposeAsync();
+                transaction = null;
+            }
+
+            if (enumeration.Completed)
+            {
+                await _database.CompleteSourceScanAsync(source, signatures.Keys.ToArray(), ct);
+                progress?.Report(new ScanProgress("Готово", files.Count, processed, indexed, skipped, errors, source));
+            }
+            else
+            {
+                HadIncompleteTraversal = true;
+                // Never infer "missing" from a partial traversal: a transient I/O/access failure can
+                // make a perfectly healthy subtree temporarily invisible. Successfully indexed rows
+                // above stay saved, but absence is only committed after a complete walk.
+                progress?.Report(new ScanProgress("Обход завершён не полностью — статус отсутствующих файлов не менялся", files.Count, processed, indexed, skipped, errors, source));
+            }
         }
         finally
         {

@@ -10,11 +10,18 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        if (e.Args.Any(x => string.Equals(x, "--portable-self-test", StringComparison.OrdinalIgnoreCase)))
+        {
+            var exitCode = PortableSelfTest.Run();
+            Shutdown(exitCode);
+            return;
+        }
+
         try
         {
             AppPaths.EnsureCreated();
             LoggingService.Initialize(AppPaths.LogsDirectory);
-            LoggingService.Info($"Photo Archive Manager 1.7.1 starting. Data: {AppPaths.DataDirectory}");
+            LoggingService.Info($"Photo Archive Manager {AppPaths.AppVersion} starting. Data: {AppPaths.DataDirectory}");
 
             var database = new DatabaseService(AppPaths.DatabasePath);
             await database.InitializeAsync();

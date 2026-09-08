@@ -1,3 +1,4 @@
+using PhotoArchiveManager.Infrastructure;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -12,6 +13,9 @@ namespace PhotoArchiveManager;
 
 public partial class MainWindow : Window
 {
+    private Point _eventGroupDragStart;
+    private EventGroupItem? _eventGroupDragCandidate;
+    private const string EventGroupDragFormat = "PhotoArchiveManager.EventGroupDragData";
     private Point _eventPhotoDragStart;
     private PhotoItem? _eventPhotoDragCandidate;
     private long[] _eventPhotoDragFileIds = [];
@@ -98,21 +102,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (modifiers == ModifierKeys.Alt && key == Key.Left)
-        {
-            if (ExecuteReviewNavigation(previous: true)) e.Handled = true;
-            return;
-        }
-        if (modifiers == ModifierKeys.Alt && key == Key.Right)
-        {
-            if (ExecuteReviewNavigation(previous: false)) e.Handled = true;
-            return;
-        }
-        if (modifiers == ModifierKeys.Control && key == Key.Enter)
-        {
-            if (ExecuteReviewToggle()) e.Handled = true;
-            return;
-        }
         if (modifiers == (ModifierKeys.Control | ModifierKeys.Shift) && key == Key.D && ViewModel.SelectedMainTabIndex == 0)
         {
             BatchDate_Click(this, new RoutedEventArgs());
@@ -152,33 +141,6 @@ public partial class MainWindow : Window
         }));
     }
 
-    private bool ExecuteReviewNavigation(bool previous)
-    {
-        System.Windows.Input.ICommand? command = ViewModel.SelectedMainTabIndex switch
-        {
-            1 => previous ? ViewModel.PreviousDuplicateGroupCommand : ViewModel.NextDuplicateGroupCommand,
-            2 => previous ? ViewModel.PreviousVisualGroupCommand : ViewModel.NextVisualGroupCommand,
-            3 => previous ? ViewModel.PreviousBurstGroupCommand : ViewModel.NextBurstGroupCommand,
-            4 => previous ? ViewModel.PreviousPersonGroupCommand : ViewModel.NextPersonGroupCommand,
-            5 => previous ? ViewModel.PreviousEventGroupCommand : ViewModel.NextEventGroupCommand,
-            _ => null
-        };
-        return ExecuteIfPossible(command);
-    }
-
-    private bool ExecuteReviewToggle()
-    {
-        System.Windows.Input.ICommand? command = ViewModel.SelectedMainTabIndex switch
-        {
-            1 => ViewModel.ToggleDuplicateReviewedCommand,
-            2 => ViewModel.ToggleVisualReviewedCommand,
-            3 => ViewModel.ToggleBurstReviewedCommand,
-            4 => ViewModel.TogglePersonReviewedCommand,
-            5 => ViewModel.ToggleEventReviewedCommand,
-            _ => null
-        };
-        return ExecuteIfPossible(command);
-    }
 
     private static bool ExecuteIfPossible(System.Windows.Input.ICommand? command)
     {
@@ -265,7 +227,8 @@ public partial class MainWindow : Window
 
         // Explorer-like behavior: right-clicking inside an existing multi-selection keeps the
         // whole selection. Right-clicking a different row makes only that row current.
-        if (!row.IsSelected)
+        var wasSelected = row.IsSelected;
+        if (!wasSelected)
         {
             if (listBox.SelectionMode != SelectionMode.Single)
                 listBox.SelectedItems.Clear();
@@ -288,7 +251,14 @@ public partial class MainWindow : Window
                 ViewModel.SelectedBurstFile = burst;
                 break;
             case nameof(PersonGroupsList) when item is PersonGroupItem person:
-                ViewModel.SelectedPersonGroup = person;
+                // Do NOT assign SelectedPersonGroup when right-clicking one row of an existing
+                // multi-selection: because SelectedItem is two-way bound, that assignment may
+                // collapse SelectedItems to a single group. Keep the batch selection intact and
+                // remember only which selected row the user invoked the context menu on; that
+                // row becomes the preferred keeper/target in the merge picker.
+                ViewModel.SetPreferredPersonMergeTarget(person);
+                if (!wasSelected || listBox.SelectedItems.Count <= 1)
+                    ViewModel.SelectedPersonGroup = person;
                 break;
             case nameof(PersonFacesList) when item is FaceItem face:
                 ViewModel.SelectedPersonFace = face;
@@ -440,61 +410,6 @@ public partial class MainWindow : Window
         Details = $"{p.GroupDisplay} · {p.QualityDisplay}"
     };
 
-    private async void Rating_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not FrameworkElement { Tag: string raw } || !int.TryParse(raw, out var rating)) return;
-        try
-        {
-            await ViewModel.SetSelectedPhotoRatingAsync(rating);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.Error("Rating update failed", ex);
-            MessageBox.Show(this, ex.Message, "Рейтинг", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void DuplicateWizard_Click(object sender, RoutedEventArgs e)
-    {
-        if (ViewModel.DuplicateGroups.Count == 0)
-        {
-            MessageBox.Show(this, "Сначала найдите или обновите точные дубли.", "Мастер дублей", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var recommendations = ViewModel.DuplicateGroups
-            .Where(g => g.Files.Count > 1)
-            .Select(g =>
-            {
-                var keeper = g.Files
-                    .OrderBy(IsSuspiciousDuplicateName)
-                    .ThenBy(x => x.FullPath.Length)
-                    .ThenBy(x => x.FileName.Length)
-                    .ThenBy(x => x.FullPath, StringComparer.CurrentCultureIgnoreCase)
-                    .First();
-                var reason = IsSuspiciousDuplicateName(keeper)
-                    ? "самый аккуратный доступный путь"
-                    : "имя без явных признаков копии · короткий путь";
-                return new DuplicateCleanupRecommendation { Group = g, Keeper = keeper, Reason = reason };
-            }).ToList();
-
-        var window = new DuplicateWizardWindow(recommendations) { Owner = this };
-        if (window.ShowDialog() != true || window.SelectedRecommendation is null) return;
-        ViewModel.SelectedMainTabIndex = 1;
-        ViewModel.SelectedDuplicateGroup = window.SelectedRecommendation.Group;
-        ViewModel.SelectedDuplicateFile = window.SelectedRecommendation.Keeper;
-    }
-
-    private static bool IsSuspiciousDuplicateName(DuplicateFileItem item)
-    {
-        var name = Path.GetFileNameWithoutExtension(item.FileName).ToLowerInvariant();
-        return name.Contains("copy", StringComparison.Ordinal) ||
-               name.Contains("копия", StringComparison.Ordinal) ||
-               name.Contains("дубликат", StringComparison.Ordinal) ||
-               System.Text.RegularExpressions.Regex.IsMatch(name, @"\([1-9]\d*\)$") ||
-               System.Text.RegularExpressions.Regex.IsMatch(name, @"[_ -](?:copy|копия)[_ -]?\d*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-    }
-
     private async void AddFolder_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFolderDialog
@@ -503,8 +418,17 @@ public partial class MainWindow : Window
             Multiselect = false
         };
 
-        if (dialog.ShowDialog(this) == true)
+        if (dialog.ShowDialog(this) != true) return;
+
+        try
+        {
             await ViewModel.AddSourceFolderAsync(dialog.FolderName);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.Error("Add source folder failed", ex);
+            MessageBox.Show(this, ex.Message, "Не удалось добавить источник", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
     private async void RemoveSource_Click(object sender, RoutedEventArgs e)
     {
@@ -523,8 +447,9 @@ public partial class MainWindow : Window
         var answer = MessageBox.Show(this,
             "Убрать источник из PAM?\n\n" + source.Path +
             "\n\nДА — убрать источник И забыть его активные записи/анализы в каталоге PAM.\n" +
+            "      Файлы, уже находящиеся в карантине, и их Undo-журнал сохранятся и не мешают закрытию источника.\n" +
             "НЕТ — убрать только из списка источников, но оставить уже проиндексированные записи в каталоге.\n\n" +
-            "Ни один файл или папка на диске НЕ будет удалён.\n\nОТМЕНА — ничего не делать.",
+            "Ни один обычный файл или папка на диске НЕ будет удалён.\n\nОТМЕНА — ничего не делать.",
             "Удаление источника из PAM",
             MessageBoxButton.YesNoCancel,
             MessageBoxImage.Warning);
@@ -612,7 +537,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "Выделите одну или несколько фотографий. Ctrl/Shift — множественное выделение.", "Пакетная дата", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
-        var initial = DateTime.TryParse(selected[0].CaptureDate, out var parsed) ? parsed : DateTime.Today;
+        var initial = StoredDateTime.TryParse(selected[0].CaptureDate, out var parsed) ? parsed : DateTime.Today;
         var dialog = new BatchCaptureDateWindow(selected.Length, initial) { Owner = this };
         if (dialog.ShowDialog() != true) return;
         try
@@ -675,6 +600,23 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "Ошибка экспорта", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void PersonGroupsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DataContext is not MainViewModel viewModel || sender is not ListBox listBox) return;
+        viewModel.UpdateSelectedPersonGroups(listBox.SelectedItems.Cast<PersonGroupItem>());
+    }
+
+    private void PersonGroupsList_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not ListBox listBox) return;
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (Keyboard.Modifiers == ModifierKeys.Control && key == Key.A)
+        {
+            listBox.SelectAll();
+            e.Handled = true;
         }
     }
 
@@ -781,6 +723,34 @@ public partial class MainWindow : Window
         }
     }
 
+    private void EventGroupsTree_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _eventGroupDragStart = e.GetPosition(EventGroupsTree);
+        _eventGroupDragCandidate = FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject)?.DataContext as EventGroupItem;
+    }
+
+    private void EventGroupsTree_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || _eventGroupDragCandidate is not { Id: > 0 } source) return;
+        if (!ViewModel.CanMoveEventPhotos) return;
+
+        var current = e.GetPosition(EventGroupsTree);
+        if (Math.Abs(current.X - _eventGroupDragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(current.Y - _eventGroupDragStart.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        var data = new DataObject();
+        data.SetData(EventGroupDragFormat, new EventGroupDragData(source.Id, source.DisplayName, source.PhotoCount));
+        try
+        {
+            DragDrop.DoDragDrop(EventGroupsTree, data, DragDropEffects.Move);
+        }
+        finally
+        {
+            _eventGroupDragCandidate = null;
+        }
+    }
+
     private void EventGroupsTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         if (e.NewValue is EventGroupItem selected) ViewModel.SelectedEventGroup = selected;
@@ -808,7 +778,7 @@ public partial class MainWindow : Window
 
     private void EventGroupsTree_PreviewDragOver(object sender, DragEventArgs e)
     {
-        if (!ViewModel.CanMoveEventPhotos || !e.Data.GetDataPresent(EventPhotoDragFormat))
+        if (!ViewModel.CanMoveEventPhotos)
         {
             e.Effects = DragDropEffects.None;
             e.Handled = true;
@@ -816,34 +786,87 @@ public partial class MainWindow : Window
         }
 
         var target = FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject)?.DataContext as EventGroupItem;
-        var payload = e.Data.GetData(EventPhotoDragFormat) as EventPhotoDragData;
-        e.Effects = target is { Id: > 0 } && payload is not null && target.Id != payload.SourceEventId
-            ? DragDropEffects.Move
-            : DragDropEffects.None;
+        if (target is not { Id: > 0 })
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Data.GetDataPresent(EventGroupDragFormat))
+        {
+            var groupPayload = e.Data.GetData(EventGroupDragFormat) as EventGroupDragData;
+            e.Effects = groupPayload is not null && target.Id != groupPayload.SourceEventId
+                ? DragDropEffects.Move
+                : DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Data.GetDataPresent(EventPhotoDragFormat))
+        {
+            var photoPayload = e.Data.GetData(EventPhotoDragFormat) as EventPhotoDragData;
+            e.Effects = photoPayload is not null && target.Id != photoPayload.SourceEventId
+                ? DragDropEffects.Move
+                : DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        e.Effects = DragDropEffects.None;
         e.Handled = true;
     }
 
     private async void EventGroupsTree_Drop(object sender, DragEventArgs e)
     {
-        if (!ViewModel.CanMoveEventPhotos || !e.Data.GetDataPresent(EventPhotoDragFormat)) return;
-        var payload = e.Data.GetData(EventPhotoDragFormat) as EventPhotoDragData;
+        if (!ViewModel.CanMoveEventPhotos) return;
         var target = FindAncestor<TreeViewItem>(e.OriginalSource as DependencyObject)?.DataContext as EventGroupItem;
-        if (payload is null || target is null || target.Id <= 0 || target.Id == payload.SourceEventId) return;
+        if (target is not { Id: > 0 }) return;
 
-        var countText = payload.FileIds.Length == 1 ? "1 фотографию" : $"{payload.FileIds.Length:N0} фото";
-        var answer = MessageBox.Show(this,
-            $"Перенести {countText} из события\n«{payload.SourceEventName}»\nв событие\n«{target.DisplayName}»?\n\n" +
+        if (e.Data.GetDataPresent(EventGroupDragFormat))
+        {
+            var payload = e.Data.GetData(EventGroupDragFormat) as EventGroupDragData;
+            if (payload is null || target.Id == payload.SourceEventId) return;
+
+            var answer = MessageBox.Show(this,
+                $"Объединить событие\n«{payload.SourceEventName}» ({payload.PhotoCount:N0} фото)\nс событием\n«{target.DisplayName}» ({target.PhotoCount:N0} фото)?\n\n" +
+                $"Останется событие «{target.DisplayName}»: его имя и обложка имеют приоритет. " +
+                "Фотографии на диске не перемещаются и не изменяются — меняется только каталог событий PAM (SQLite).",
+                "Объединить события",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes) return;
+
+            try
+            {
+                await ViewModel.MergeEventIntoAsync(payload.SourceEventId, target.Id);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Не удалось объединить события", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return;
+        }
+
+        if (!e.Data.GetDataPresent(EventPhotoDragFormat)) return;
+        var photoPayload = e.Data.GetData(EventPhotoDragFormat) as EventPhotoDragData;
+        if (photoPayload is null || target.Id == photoPayload.SourceEventId) return;
+
+        var countText = photoPayload.FileIds.Length == 1 ? "1 фотографию" : $"{photoPayload.FileIds.Length:N0} фото";
+        var moveAnswer = MessageBox.Show(this,
+            $"Перенести {countText} из события\n«{photoPayload.SourceEventName}»\nв событие\n«{target.DisplayName}»?\n\n" +
             "Изменится только каталог событий PAM (SQLite). Сами фотографии не перемещаются, не переименовываются и не изменяются. " +
             "Оба затронутых события будут закреплены как пользовательские.",
             "Перенос фото между событиями",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question,
             MessageBoxResult.No);
-        if (answer != MessageBoxResult.Yes) return;
+        if (moveAnswer != MessageBoxResult.Yes) return;
 
         try
         {
-            await ViewModel.MoveEventPhotosAsync(payload.SourceEventId, target.Id, payload.FileIds);
+            await ViewModel.MoveEventPhotosAsync(photoPayload.SourceEventId, target.Id, photoPayload.FileIds);
         }
         catch (Exception ex)
         {
@@ -867,6 +890,7 @@ public partial class MainWindow : Window
     }
 
     private sealed record PersonFaceDragData(long FaceId, long? SourcePersonId, string FileName, string SourceGroupName);
+    private sealed record EventGroupDragData(long SourceEventId, string SourceEventName, int PhotoCount);
     private sealed record EventPhotoDragData(long SourceEventId, string SourceEventName, long[] FileIds);
 
 }

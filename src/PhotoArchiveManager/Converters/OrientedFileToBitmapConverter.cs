@@ -1,7 +1,8 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Windows.Data;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using PhotoArchiveManager.Infrastructure;
 
 namespace PhotoArchiveManager.Converters;
 
@@ -24,11 +25,7 @@ public sealed class OrientedFileToBitmapConverter : IMultiValueConverter
             bitmap.EndInit();
             bitmap.Freeze();
 
-            if (orientation is not (3 or 6 or 8)) return bitmap;
-            var angle = orientation == 3 ? 180 : orientation == 6 ? 90 : 270;
-            var rotated = new TransformedBitmap(bitmap, new RotateTransform(angle));
-            rotated.Freeze();
-            return rotated;
+            return ExifOrientationHelper.Apply(bitmap, orientation);
         }
         catch
         {

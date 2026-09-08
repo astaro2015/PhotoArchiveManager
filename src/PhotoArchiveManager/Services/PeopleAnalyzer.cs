@@ -1,4 +1,4 @@
-using OpenCvSharp;
+﻿using OpenCvSharp;
 using OpenCvSharp.Dnn;
 using PhotoArchiveManager.Infrastructure;
 using PhotoArchiveManager.Models;
@@ -39,6 +39,7 @@ public sealed class PeopleAnalyzer
 
         try
         {
+            OpenCvRuntimeDiagnostics.EnsureAvailable();
             _models.EnsureRecognitionReady();
             Directory.CreateDirectory(_faceThumbnailDirectory);
             var candidates = await _database.GetFaceIndexCandidatesAsync(token);
@@ -66,6 +67,7 @@ public sealed class PeopleAnalyzer
             {
                 token.ThrowIfCancellationRequested();
                 await _pauseGate.WaitIfPausedAsync(token);
+                List<DetectedFaceDraft>? pendingDrafts = null;
 
                 try
                 {
@@ -75,7 +77,10 @@ public sealed class PeopleAnalyzer
                         processed++;
                         if (!string.IsNullOrWhiteSpace(item.FaceIndexError)) errors++;
                         facesFound += item.CachedFaceCount;
-                        Report(progress, "Индекс лиц", item.FullPath, total, processed, computed, cached, errors, facesFound);
+                        // A fully cached face index can otherwise flood the UI with one dispatcher
+                        // callback per photo and make an instant cache pass look artificially slow.
+                        if (processed % 25 == 0 || processed == total)
+                            Report(progress, "Индекс лиц", item.FullPath, total, processed, computed, cached, errors, facesFound);
                         continue;
                     }
 
@@ -97,24 +102,33 @@ public sealed class PeopleAnalyzer
                         FacesFound = facesFound
                     });
 
-                    var oldThumbs = await _database.GetFaceThumbnailPathsForFileAsync(item.Id, token);
-                    var drafts = await Task.Run(() => AnalyzeOne(item, recognizer, token), token);
-                    await _database.ReplaceDetectedFacesAsync(item.Id, item.FileSize, item.LastWriteUtcTicks, AlgorithmVersion, drafts, token);
+                    pendingDrafts = await Task.Run(() => AnalyzeOne(item, recognizer, token), token);
+                    var after = new FileInfo(item.FullPath);
+                    if (!after.Exists || after.Length != item.FileSize || after.LastWriteTimeUtc.Ticks != item.LastWriteUtcTicks)
+                        throw new IOException("Файл изменился во время анализа лиц. Выполните повторное сканирование библиотеки.");
+                    var oldThumbs = await _database.ReplaceDetectedFacesAsync(
+                        item.Id, item.FileSize, item.LastWriteUtcTicks, AlgorithmVersion,
+                        item.Orientation, item.FaceIndexOrientationVersion, pendingDrafts, token);
+                    var committedDrafts = pendingDrafts;
+                    pendingDrafts = null; // DB now references these thumbnails; never delete them in the catch path.
                     foreach (var old in oldThumbs)
                     {
-                        try
-                        {
-                            if (!string.IsNullOrWhiteSpace(old) && File.Exists(old) && !drafts.Any(x => string.Equals(x.ThumbnailPath, old, StringComparison.OrdinalIgnoreCase)))
-                                File.Delete(old);
-                        }
-                        catch { }
+                        if (string.IsNullOrWhiteSpace(old) || committedDrafts.Any(x => string.Equals(x.ThumbnailPath, old, StringComparison.OrdinalIgnoreCase)))
+                            continue;
+                        if (!CacheFileSafety.TryDeleteGeneratedCacheFile(old, out var cacheDeleteError))
+                            LoggingService.Warn("Не удалён старый кэш лица: " + old + " — " + cacheDeleteError);
                     }
                     computed++;
-                    facesFound += drafts.Count();
+                    facesFound += committedDrafts.Count;
                 }
-                catch (OperationCanceledException) { throw; }
+                catch (OperationCanceledException)
+                {
+                    CleanupUncommittedFaceThumbnails(pendingDrafts);
+                    throw;
+                }
                 catch (Exception ex)
                 {
+                    CleanupUncommittedFaceThumbnails(pendingDrafts);
                     errors++;
                     LoggingService.Error("Face indexing failed: " + item.FullPath, ex);
                     await _database.MarkFaceIndexErrorAsync(item.Id, item.FileSize, item.LastWriteUtcTicks, AlgorithmVersion, ex.Message, token);
@@ -181,7 +195,7 @@ public sealed class PeopleAnalyzer
 
         // Create YuNet with the actual input dimensions.  This deliberately avoids
         // SetInputSize(), which is missing from the OpenCvSharp4 4.13 managed API
-        // shipped by OpenCvSharp4.Windows 4.13.0.20260627 on the user's SDK.
+        // shipped by OpenCvSharp4 4.13.0.20260627 on the user's SDK.
         using var detector = FaceDetectorYN.Create(
             _models.YuNetModelPath, "", image.Size(),
             scoreThreshold: 0.78f, nmsThreshold: 0.30f, topK: 5000,
@@ -424,6 +438,16 @@ public sealed class PeopleAnalyzer
         var norm = Math.Sqrt(sum);
         if (norm < 1e-12) return;
         for (var i = 0; i < values.Length; i++) values[i] = (float)(values[i] / norm);
+    }
+
+    private static void CleanupUncommittedFaceThumbnails(IEnumerable<DetectedFaceDraft>? drafts)
+    {
+        if (drafts is null) return;
+        foreach (var draft in drafts)
+        {
+            if (CacheFileSafety.TryDeleteGeneratedCacheFile(draft.ThumbnailPath, out var error)) continue;
+            LoggingService.Warn("Не удалён незакоммиченный кэш лица: " + draft.ThumbnailPath + " — " + error);
+        }
     }
 
     private static void Report(IProgress<FaceScanProgress>? progress, string stage, string file, int total, int processed, int computed, int cached, int errors, int faces)

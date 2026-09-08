@@ -14,6 +14,18 @@ public static class AppPaths
     public static string QuarantineDirectory => Path.Combine(DataDirectory, "Quarantine");
     public static string ModelDirectory => Path.Combine(DataDirectory, "Models");
 
+    public static string AppVersion
+    {
+        get
+        {
+            var version = typeof(AppPaths).Assembly.GetName().Version;
+            if (version is null) return "unknown";
+            return version.Build >= 0
+                ? $"{version.Major}.{version.Minor}.{version.Build}"
+                : $"{version.Major}.{version.Minor}";
+        }
+    }
+
     public static void EnsureCreated()
     {
         Directory.CreateDirectory(DataDirectory);

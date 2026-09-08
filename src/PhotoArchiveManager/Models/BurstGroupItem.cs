@@ -1,4 +1,4 @@
-using PhotoArchiveManager.Infrastructure;
+﻿using PhotoArchiveManager.Infrastructure;
 
 namespace PhotoArchiveManager.Models;
 
@@ -52,6 +52,9 @@ public sealed class BurstGroupItem : ObservableObject
 
         foreach (var file in Files
                      .OrderByDescending(x => x.QualityScore)
+                     .ThenBy(x => x.ClosedEyeCount > 0 ? x.ClosedEyeCount : 0)
+                     .ThenByDescending(x => x.FaceCount > 0 ? x.WorstFaceScore : -1)
+                     .ThenByDescending(x => x.SharpnessScore)
                      .ThenByDescending(x => x.ResolutionScore)
                      .ThenByDescending(x => x.FileSize)
                      .Take(keepCount))

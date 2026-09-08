@@ -1,7 +1,7 @@
 <Window x:Class="PhotoArchiveManager.HelpWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Photo Archive Manager · 1.7.1 · Справка"
+        Title="Photo Archive Manager · 1.15.3 · Справка"
         Icon="Assets/PhotoArchiveManager.ico"
         Width="920" Height="760" MinWidth="720" MinHeight="560"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
@@ -37,7 +37,7 @@
                         <TextBlock Text="3. Используйте специализированные вкладки" FontSize="17" FontWeight="SemiBold"/>
                         <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="Точные и визуальные дубли помогают найти копии, «Серии» — похожие кадры одной съёмки, «Люди» — сгруппированные лица, «События» — поездки и временные группы, «Хронология» — просмотр архива по годам и месяцам."/>
                         <TextBlock Text="4. Организация — только после Preview" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Text="Раздел организации сначала строит план БЫЛО → СТАНЕТ. Физическое перемещение запускается отдельно, требует подтверждений, проверки SHA-256 и создаёт журнал Undo."/>
+                        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Text="Раздел организации сначала строит план БЫЛО → СТАНЕТ. Физическое перемещение запускается отдельно, требует подтверждений, проверки SHA-256 конечного файла и создаёт журнал Undo. Совпадение SHA-256 гарантирует побайтовое сохранение встроенных EXIF/IPTC/XMP. Дата изменения сохраняется исходной; дата создания берётся из EXIF даты съёмки, а при её отсутствии — из исходного файла."/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -49,8 +49,8 @@
                         <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="Двойной щелчок по строке фото или Space открывает просмотрщик сразу развёрнутым и с фотографией целиком по окну. ←/→ листают соседние кадры, колесо и +/- меняют масштаб, мышью можно перетаскивать увеличенное фото, 1 — 100%, F — по окну, I — сведения, T — нижнюю плёнку, F11 — полный экран, Esc — закрыть. Колесо над нижней плёнкой прокручивает её влево/вправо."/>
                         <TextBlock Text="Хронология" FontSize="17" FontWeight="SemiBold"/>
                         <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="Раздел «Хронология» группирует фотографии по году и месяцу. Выберите месяц слева — в центре появятся его кадры в порядке съёмки. Ручная дата PAM также участвует в хронологии."/>
-                        <TextBlock Text="Избранное и рейтинг" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Text="В Библиотеке выбранный кадр можно добавить в избранное и оценить от 1 до 5 звёзд. Слева доступны фильтры «Только избранное» и минимальный рейтинг. Эти отметки хранятся только в SQLite-каталоге PAM."/>
+                        <TextBlock Text="Разбор библиотеки" FontSize="17" FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Text="Фильтр «Требуют разбора» показывает фотографии без надёжной даты, без события или с ошибкой индексации/превью. Отдельно можно выбрать каждый из этих статусов. Сортировка библиотеки доступна по дате в обе стороны, имени и полному пути."/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -65,6 +65,10 @@
                         <TextBlock Text="Перенос фото между событиями" FontSize="17" FontWeight="SemiBold"/>
                         <Border Style="{StaticResource InfoBorderStyle}" Margin="0,7,0,14">
                             <TextBlock TextWrapping="Wrap" Text="Выберите событие слева. В среднем списке выделите один снимок или несколько снимков через Ctrl/Shift. Зажмите левую кнопку мыши на выделенном снимке и перетащите выделение на нужное событие слева. После подтверждения PAM изменит только связь в SQLite. Файлы на диске останутся на прежних местах."/>
+                        </Border>
+                        <TextBlock Text="Объединение событий drag&amp;drop" FontSize="17" FontWeight="SemiBold"/>
+                        <Border Style="{StaticResource InfoBorderStyle}" Margin="0,7,0,14">
+                            <TextBlock TextWrapping="Wrap" Text="Перетащите само событие в дереве слева на другое событие. После подтверждения исходное событие будет объединено с целевым. Имя и существующая обложка события, НА КОТОРОЕ перетащили, имеют приоритет. Фотографии на диске не перемещаются и не изменяются."/>
                         </Border>
                         <TextBlock Text="Почему событие становится закреплённым" FontSize="17" FontWeight="SemiBold"/>
                         <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="Переименование, объединение, заметка, обложка, разделение и перенос отдельных фото — это ручная правка. Поэтому затронутые непустые события становятся пользовательскими: последующий автоматический анализ не разрушит вашу корректировку."/>
@@ -91,17 +95,28 @@
                 </ScrollViewer>
             </TabItem>
 
-            <TabItem Header="Review и экспорт">
+            <TabItem Header="Анализ и экспорт">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel Margin="16">
-                        <TextBlock Text="Быстрый review групп" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="В разделах «Точные дубли», «Похожие / копии», «Серии», «Люди» и «События» доступны кнопки предыдущая / следующая / «Обработано». Метка хранится в SQLite и переживает перезапуск. После отметки PAM старается перейти к следующей необработанной группе."/>
-                        <TextBlock Text="Мастер точных дублей" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="Для байт-в-байт одинаковых файлов качество изображения одинаково. Мастер предлагает, какую копию разумнее оставить, ориентируясь на имя и путь, но сам ничего не удаляет и не перемещает: после перехода в группу решение всё равно подтверждает пользователь."/>
-                        <TextBlock Text="Игнорирование группы лиц с Undo" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="В «Людях» можно игнорировать целую ошибочную группу. PAM сохраняет прежнюю принадлежность каждого лица в служебном Undo-журнале; кнопка восстановления возвращает последнее активное игнорирование. Выбранное лицо можно сделать обложкой группы или перетащить на другую группу слева. Фотографии не меняются."/>
+                        <TextBlock Text="Quality Score v3.3" FontSize="17" FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,6" TextWrapping="Wrap" Text="Quality Score v3.3 рассчитывается полностью локально: фотографии не отправляются в интернет, облачные API не используются. Техническая часть учитывает многомасштабную резкость и смаз, шум, клиппинг света/теней, тональный диапазон и JPEG-квантование. Разрешение показано отдельно как «сохранность» и не завышает общий балл."/>
+                        <TextBlock Margin="0,0,0,14" TextWrapping="Wrap" Text="Если в кадре есть люди, встроенный YuNet оценивает основные лица, их детализацию и геометрию/позу; в групповых кадрах отдельно учитывается худшее основное лицо. Для основных лиц v3.3 дополнительно проверяет вероятное закрытие глаз чистой OpenCV-эвристикой без отдельной AI-модели. Низкое разрешение, сильный поворот, слабый контраст и сомнительные случаи получают «неопределённо» и не штрафуются. Один вероятно закрытый глаз штрафуется умеренно, два — заметнее. Quality Score остаётся подсказкой, а не основанием для автоматического удаления."/>
+                        <TextBlock Margin="0,0,0,14" TextWrapping="Wrap" Text="JPG, PNG, BMP и TIFF декодируются штатно локально. Для HEIC/HEIF/AVIF и части WEBP доступность анализа/превью может зависеть от установленного в Windows WIC-кодека; PAM сам кодеки из интернета во время работы не скачивает."/>
+                        <TextBlock Text="Похожие / копии и Серии" FontSize="17" FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,6" TextWrapping="Wrap" Text="В этих двух разделах действует одно правило: неотмеченный кадр остаётся на месте, галочка «в карантин» означает убрать его через обратимый карантин. Отдельной галки «Оставить» нет. PAM не позволит отправить в карантин всю визуальную группу или всю серию — хотя бы один кадр должен остаться неотмеченным."/>
+                        <TextBlock Margin="0,0,0,14" TextWrapping="Wrap" Text="В «Сериях» команда «Применить рекомендацию» отмечает в карантин все нерекомендованные кадры и оставляет рекомендованные без галки; после этого выбор можно исправить вручную. «Отметить остальные в карантин» оставляет текущий выбранный кадр и отмечает все остальные."/>
+                        <TextBlock Text="Точные дубли по папкам" FontSize="17" FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,6" TextWrapping="Wrap" Text="В «Точных дублях» переключите «Вид» на «По папкам». Слева показаны уникальные пересечения папок: одна и та же пара A ↔ B встречается в списке ровно один раз, без зеркального B ↔ A. Пути намеренно вынесены из компактного списка: выберите № пары — справа появятся обе реальные папки A и B со статистикой."/>
+                        <TextBlock Margin="0,0,0,6" TextWrapping="Wrap" Text="В карточках выбранной пары щёлкните A или B — выбранная сторона подсветится. Ниже одна action-кнопка всегда прямо пишет, какую сторону она уберёт. Снизу показаны только SHA-256, присутствующие одновременно в A и B: одна строка = один SHA-256; противоположная сторона служит keeper."/>
+                        <TextBlock Margin="0,0,0,6" TextWrapping="Wrap" Text="В режиме «По папкам» больше нет отдельных команд, которые неожиданно действуют на все пересечения папки. Операция A ↔ B затрагивает только текущую пару; другие папки, другие пересечения и уникальные файлы не трогаются."/>
+                        <TextBlock Margin="0,0,0,6" TextWrapping="Wrap" Text="По умолчанию точные дубли убираются через обратимый карантин. Галочка «Удалять сразу, без карантина и Undo» включает только для раздела точных дублей безвозвратное удаление подтверждённых копий. В этом режиме кнопки удаления становятся красными и меняют подписи; режим не сохраняется между запусками и при старте всегда выключен."/>
+                        <TextBlock Margin="0,0,0,14" TextWrapping="Wrap" Text="Фильтр «Только пары, где можно очистить ВСЕ дубли одной стороны» оставляет пары, в которых все найденные exact-duplicate SHA-256 хотя бы одной стороны присутствуют и во второй папке. Уникальные файлы не затрагиваются. Перед карантином или прямым удалением keeper и кандидаты заново проверяются по полному SHA-256. При прямом удалении PAM дополнительно удерживает проверенный keeper открытым на время операции и ведёт необратимый audit-запись в SQLite."/>
+                        <TextBlock Text="Исключение группы лиц с Undo" FontSize="17" FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="В «Людях» команда «Расформировать группу (лица → «Без группы»)» возвращает лица в «Без группы», откуда они снова могут попасть в автоматическую группировку. Команда «Исключить лица группы из раздела «Люди»» действует иначе: лица перестают показываться и участвовать в группировке, но PAM сохраняет их прежнюю принадлежность в Undo-журнале. Кнопка восстановления возвращает последнее исключение. Выбранное лицо можно сделать обложкой группы или перетащить на другую группу слева. Фотографии не меняются."/>
+                        <TextBlock Text="Несколько групп людей сразу" FontSize="17" FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="В списке групп слева используйте Ctrl для отдельных групп, Shift для диапазона и Ctrl+A для всех групп. Объединение, расформирование и исключение применяются ко всему выделению. Правый клик по уже выделенной группе не снимает остальные выделения; эта строка становится предпочтительной целью объединения. В окне объединения PAM явно показывает, какая целевая группа останется: сохраняются именно её имя и обложка, а остальные выбранные группы поглощаются ею. Переименование, ручная обложка и показ фото по человеку остаются действиями для одной группы."/>
                         <TextBlock Text="Экспорт каталога" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Text="В «Настройках» можно экспортировать метаданные в JSON или CSV UTF-8: пути, даты, камеры, события, люди, избранное, рейтинг, SHA-256, число точных копий, Quality Score, GPS и состояние файлов. Экспорт только читает каталог."/>
+                        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Text="В «Настройках» можно экспортировать метаданные в JSON или CSV UTF-8: пути, даты, камеры, события, люди, SHA-256, число точных копий, Quality Score, GPS и состояние файлов. Экспорт только читает каталог."/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -113,12 +128,15 @@
                             <TextBlock FontWeight="SemiBold" TextWrapping="Wrap" Foreground="{StaticResource WarningTextBrush}" Text="Главное правило PAM: анализ каталога не должен менять оригиналы. Операции, способные физически затронуть файлы, вынесены отдельно и сопровождаются дополнительной проверкой."/>
                         </Border>
                         <TextBlock Text="Организация" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,8" TextWrapping="Wrap" Text="Перед перемещением строится Preview БЫЛО → СТАНЕТ. Перемещение требует подтверждений, сверяет SHA-256 и записывает действие в журнал Undo. PAM не перезаписывает существующий файл поверх другого."/>
-                        <TextBlock Margin="0,0,0,14" TextWrapping="Wrap" Text="Структура нового архива: Год → месяц или диапазон месяцев + название события, например «2016\авг — Абхазия, Пицунда» или «2017\янв-февр — Каникулы». Цифровой месяц перед названием не добавляется. По умолчанию имя файла сохраняет исходное имя и получает календарную дату без времени и вручную подтверждённые имена людей: «2016-08-18_IMG_0133 — Маша, Олег.JPG». Безымянные/автоматические группы лиц не используются."/>
-                        <TextBlock Text="Карантин" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,14" TextWrapping="Wrap" Text="Удаление дублей сначала отправляет файлы в управляемый карантин. Окончательное удаление скрыто в настройках, по умолчанию выключено и требует двух отдельных подтверждений."/>
+                        <TextBlock Margin="0,5,0,8" TextWrapping="Wrap" Text="Перед перемещением строится Preview БЫЛО → СТАНЕТ. PAM проверяет полный SHA-256 уже по конечному пути; при переносе между дисками исходник удаляется только после этой финальной проверки. Совпадение SHA-256 означает, что EXIF/IPTC/XMP и всё содержимое файла сохранены побайтово. Дата изменения остаётся исходной. Дата создания нового файла берётся из EXIF даты съёмки, если она есть; иначе сохраняется исходная дата создания. Действие записывается в журнал Undo, перезапись запрещена."/>
+                        <TextBlock Margin="0,0,0,8" TextWrapping="Wrap" Text="Быстрая раскладка имеет три режима: только Год («2024\фото.jpg»), Год → месяц («2024\08 — август\фото.jpg») и Год → месяц → день («2024\08 — август\18\фото.jpg»). В этих режимах исходные имена файлов сохраняются; суффикс добавляется только при конфликте одинаковых имён."/>
+                        <TextBlock Margin="0,0,0,8" TextWrapping="Wrap" Text="Полная организация: Год → месяц или диапазон месяцев + название события, например «2016\авг — Абхазия, Пицунда» или «2017\янв-февр — Каникулы». В полном режиме можно добавлять календарную дату без времени и вручную подтверждённые имена людей в имя файла: «2016-08-18_IMG_0133 — Маша, Олег.JPG». Безымянные/автоматические группы лиц не используются."/>
+                        <TextBlock Margin="0,0,0,14" TextWrapping="Wrap" Text="После успешной быстрой раскладки PAM предлагает взять получившийся корень за основу следующего этапа: переключиться на полную организацию и сразу построить новый Preview. Дополнительные копии файлов не создаются."/>
+                        <TextBlock Text="Карантин и прямое удаление exact-дублей" FontSize="17" FontWeight="SemiBold"/>
+                        <TextBlock Margin="0,5,0,8" TextWrapping="Wrap" Text="По умолчанию все действия с точными дублями используют управляемый карантин и Undo. На самой вкладке «Точные дубли» можно временно включить «Удалять сразу, без карантина и Undo». Эта галочка при каждом запуске PAM снова выключена; при её включении опасные кнопки становятся красными и каждое массовое удаление требует явного подтверждения с числом файлов и объёмом."/>
+                        <TextBlock Margin="0,0,0,14" TextWrapping="Wrap" Text="Прямой режим применяется только к полным exact-дублям с совпадающим SHA-256. PAM повторно проверяет keeper и каждый кандидат, не допускает удаления последней подтверждённой копии, фиксирует удаление в журнале SQLite, но восстановить файл через Undo после прямого удаления нельзя. Окончательная очистка уже помещённых в карантин файлов остаётся отдельной функцией в настройках с собственными защитами."/>
                         <TextBlock Text="Что НЕ меняет оригиналы" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Text="Имена людей, события, ручная дата, избранное, рейтинг, оценки качества и хэши — это данные локального каталога. Они не записываются внутрь фотографии."/>
+                        <TextBlock Margin="0,5,0,0" TextWrapping="Wrap" Text="Имена людей, события, ручная дата, оценки качества и хэши — это данные локального каталога. Они не записываются внутрь фотографии."/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -158,17 +176,6 @@
                             <TextBlock Grid.Row="8" Text="Ctrl+9" FontWeight="SemiBold" Margin="0,3"/><TextBlock Grid.Row="8" Grid.Column="1" Text="Карантин / Undo" Margin="0,3"/>
                             <TextBlock Grid.Row="9" Text="Ctrl+0" FontWeight="SemiBold" Margin="0,3"/><TextBlock Grid.Row="9" Grid.Column="1" Text="Настройки" Margin="0,3"/>
                         </Grid>
-
-                        <TextBlock Text="Быстрый review" FontSize="17" FontWeight="SemiBold"/>
-                        <TextBlock Margin="0,5,0,8" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Text="Работает в «Точные дубли», «Похожие / копии», «Серии», «Люди» и «События»."/>
-                        <Grid Margin="0,0,0,16">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                            <TextBlock Grid.Row="0" Text="Alt+←" FontWeight="SemiBold" Margin="0,4"/><TextBlock Grid.Row="0" Grid.Column="1" Text="Предыдущая группа" Margin="0,4"/>
-                            <TextBlock Grid.Row="1" Text="Alt+→" FontWeight="SemiBold" Margin="0,4"/><TextBlock Grid.Row="1" Grid.Column="1" Text="Следующая группа" Margin="0,4"/>
-                            <TextBlock Grid.Row="2" Text="Ctrl+Enter" FontWeight="SemiBold" Margin="0,4"/><TextBlock Grid.Row="2" Grid.Column="1" Text="Переключить отметку «Обработано»" Margin="0,4"/>
-                        </Grid>
-
                         <TextBlock Text="Работа с выбранными фото" FontSize="17" FontWeight="SemiBold"/>
                         <Grid Margin="0,8,0,12">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
@@ -189,15 +196,28 @@
 
             <TabItem Header="О программе">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel Margin="18" MaxWidth="650">
-                        <TextBlock Text="Photo Archive Manager" FontSize="22" FontWeight="SemiBold"/>
-                        <TextBlock Text="Локальный менеджер семейного фотоархива" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,5,0,18"/>
+                    <StackPanel Margin="18" MaxWidth="700">
+                        <Grid Margin="0,0,0,18">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="132"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Border Width="112" Height="112" CornerRadius="24" ClipToBounds="True"
+                                    BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" Background="{StaticResource PanelBrush}"
+                                    VerticalAlignment="Top">
+                                <Image Source="Assets/PhotoArchiveManagerAbout.png" Stretch="UniformToFill"/>
+                            </Border>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="Photo Archive Manager" FontSize="22" FontWeight="SemiBold"/>
+                                <TextBlock Text="Локальный менеджер семейного фотоархива" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Grid>
                         <Border Style="{StaticResource CardBorderStyle}" Padding="16">
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="180"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <TextBlock Grid.Row="0" Text="Версия" FontWeight="SemiBold" Margin="0,4"/>
-                                <TextBlock Grid.Row="0" Grid.Column="1" Text="1.7.1" Margin="0,4"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="1.15.3" Margin="0,4"/>
                                 <TextBlock Grid.Row="1" Text="Разработчик" FontWeight="SemiBold" Margin="0,4"/>
                                 <TextBlock Grid.Row="1" Grid.Column="1" Text="Привалов Олег" Margin="0,4"/>
                                 <TextBlock Grid.Row="2" Text="Дата создания проекта" FontWeight="SemiBold" Margin="0,4"/>
@@ -205,7 +225,7 @@
                             </Grid>
                         </Border>
                         <TextBlock Margin="0,16,0,0" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap"
-                                   Text="PAM хранит каталог и результаты анализа локально. Изменения лиц, событий, рейтингов и ручных дат остаются в SQLite; физические операции с оригиналами выполняются только через специально защищённые сценарии."/>
+                                   Text="PAM хранит каталог и результаты анализа локально. Изменения лиц, событий и ручных дат остаются в SQLite; физические операции с оригиналами выполняются только через специально защищённые сценарии."/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>

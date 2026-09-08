@@ -2,9 +2,12 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Icon="Assets/PhotoArchiveManager.ico"
-        Title="Сравнение похожих фотографий — Photo Archive Manager 1.7.1"
+        Title="Сравнение похожих фотографий — Photo Archive Manager 1.15.3"
         Width="1500" Height="880" MinWidth="980" MinHeight="620"
         WindowStartupLocation="CenterOwner" Background="{StaticResource AppBackgroundBrush}">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
+    </Window.Resources>
     <DockPanel>
         <Border DockPanel.Dock="Top" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="0,0,0,1" Padding="10,7">
             <DockPanel LastChildFill="False">
@@ -25,7 +28,7 @@
 
         <Border DockPanel.Dock="Bottom" Background="{StaticResource WarningSurfaceBrush}" BorderBrush="{StaticResource WarningBorderBrush}" BorderThickness="0,1,0,0" Padding="10,7">
             <TextBlock TextWrapping="Wrap" Foreground="{StaticResource WarningTextBrush}"
-                       Text="Масштаб и позиция синхронизированы. Ctrl + колесо меняет общий масштаб; изображение можно таскать левой кнопкой мыши. 100% — один пиксель файла на один логический пиксель WPF. Quality Score — техническая эвристика; при найденных лицах дополнительно учитываются резкость лица и обнаружение глаз. Это не оценка сюжета или ценности снимка."/>
+                       Text="Масштаб и позиция синхронизированы. Ctrl + колесо меняет общий масштаб; изображение можно таскать левой кнопкой мыши. 100% — один пиксель файла на один логический пиксель WPF. Quality Score v3.3 учитывает технические дефекты и качество основных лиц; вероятно закрытые глаза проверяются локальной консервативной OpenCV-эвристикой и штрафуются только при достаточной уверенности. Это не оценка сюжета или ценности снимка."/>
         </Border>
 
         <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Padding="8">
@@ -100,6 +103,7 @@
                                     <TextBlock Text="{Binding FullPath}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" ToolTip="{Binding FullPath}"/>
                                     <TextBlock Text="{Binding QualityComponentsDisplay}" FontSize="12" Margin="0,5,0,0" TextWrapping="Wrap"/>
                                     <TextBlock Text="{Binding FaceDisplay}" Foreground="{StaticResource SuccessTextBrush}" FontSize="12" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                    <TextBlock Text="{Binding BlinkWarningDisplay}" Visibility="{Binding HasBlinkWarning, Converter={StaticResource BoolToVisibility}}" Foreground="{StaticResource WarningTextBrush}" FontSize="12" FontWeight="SemiBold" Margin="0,3,0,0" TextWrapping="Wrap"/>
                                     <TextBlock Text="{Binding QualityNotes}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                     <TextBlock Margin="0,5,0,0" FontSize="12">
                                         <Run Text="Сходство: "/><Run Text="{Binding SimilarityDisplay, Mode=OneWay}" FontWeight="SemiBold"/>

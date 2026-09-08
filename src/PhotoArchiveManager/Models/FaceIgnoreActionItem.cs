@@ -12,5 +12,5 @@ public sealed class FaceIgnoreActionItem
     public bool IsActive => string.IsNullOrWhiteSpace(UndoneUtc);
     public string DisplayText => IsActive
         ? $"Можно восстановить: {ScopeLabel} · {FaceCount:N0} лиц"
-        : "Последнее игнорирование уже восстановлено";
+        : "Последнее исключение уже восстановлено";
 }

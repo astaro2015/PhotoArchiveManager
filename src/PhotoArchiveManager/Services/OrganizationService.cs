@@ -22,6 +22,7 @@ public sealed class OrganizationService
 
     public async Task<List<OrganizationPlanItem>> BuildPlanAsync(
         string destinationRoot,
+        OrganizationLayoutMode layoutMode,
         bool useFallbackDates,
         bool includeDateInFileName,
         bool includeNamedPeopleInFileName,
@@ -42,8 +43,18 @@ public sealed class OrganizationService
             cancellationToken.ThrowIfCancellationRequested();
             var sourcePath = Path.GetFullPath(item.FullPath);
             var trustedDate = CaptureDatePolicy.IsTrusted(item.CaptureDateSource);
-            var parsedDate = DateTime.TryParse(item.CaptureDate, out var captureDate);
+            var parsedDate = StoredDateTime.TryParse(item.CaptureDate, out var captureDate);
+            var hasUsableTrustedDate = trustedDate && parsedDate;
             var canUseDate = parsedDate && (trustedDate || useFallbackDates);
+            // Use the actual embedded EXIF date for filesystem CreationTime even when the user
+            // has overridden the catalog CaptureDate manually. AutoCaptureDate retains the scanner's
+            // metadata-derived value; a file-date fallback is deliberately not treated as embedded EXIF.
+            DateTime? embeddedCaptureDate = null;
+            if (item.CaptureDateSource.StartsWith("EXIF", StringComparison.OrdinalIgnoreCase) && parsedDate)
+                embeddedCaptureDate = captureDate;
+            else if (item.AutoCaptureDateSource.StartsWith("EXIF", StringComparison.OrdinalIgnoreCase) &&
+                     StoredDateTime.TryParse(item.AutoCaptureDate, out var autoCaptureDate))
+                embeddedCaptureDate = autoCaptureDate;
 
             string relativeFolder;
             string dateDisplay;
@@ -64,40 +75,29 @@ public sealed class OrganizationService
             else
             {
                 dateDisplay = $"{captureDate:dd.MM.yyyy HH:mm} · {item.CaptureDateSource}";
-                var eventStart = DateTime.TryParse(item.EventStartDate, out var es) ? es : captureDate;
-                var eventEnd = DateTime.TryParse(item.EventEndDate, out var ee) ? ee : eventStart;
-                if (eventEnd < eventStart) eventEnd = eventStart;
-                var eventNameIsOnlyLegacyDate = IsLegacyDateOnlyEventName(item.EventName, eventStart, eventEnd);
-                var eventNameAllowed = !string.IsNullOrWhiteSpace(item.EventName)
-                                       && !item.EventIsAuto
-                                       && !eventNameIsOnlyLegacyDate;
-                if (eventNameAllowed)
+                relativeFolder = layoutMode switch
                 {
-                    var monthPart = BuildMonthRange(eventStart.Date, eventEnd.Date);
-                    var safeEvent = SanitizeSegment(item.EventName, 90);
-                    relativeFolder = Path.Combine(eventStart.Year.ToString("0000"), $"{monthPart} — {safeEvent}");
-                    eventDisplay = item.EventName;
-                }
-                else
-                {
-                    relativeFolder = Path.Combine(captureDate.Year.ToString("0000"), GetMonthAbbreviation(captureDate.Month));
-                    if (!string.IsNullOrWhiteSpace(item.EventName))
-                    {
-                        eventDisplay = eventNameIsOnlyLegacyDate
-                            ? "Служебное название по дате не используется в папке: " + item.EventName
-                            : item.EventIsAuto ? "Автособытие не использовано: " + item.EventName : item.EventName;
-                    }
-                }
+                    OrganizationLayoutMode.Year => captureDate.Year.ToString("0000"),
+                    OrganizationLayoutMode.YearMonth => Path.Combine(
+                        captureDate.Year.ToString("0000"),
+                        BuildQuickMonthFolder(captureDate.Month)),
+                    OrganizationLayoutMode.YearMonthDay => Path.Combine(
+                        captureDate.Year.ToString("0000"),
+                        BuildQuickMonthFolder(captureDate.Month),
+                        captureDate.Day.ToString("00")),
+                    _ => BuildFullRelativeFolder(item, captureDate, out eventDisplay)
+                };
             }
 
             var targetFolder = Path.Combine(destinationRoot, relativeFolder);
             var originalName = SanitizeFileName(string.IsNullOrWhiteSpace(item.OriginalFileName) ? item.FileName : item.OriginalFileName);
+            var isFullLayout = layoutMode == OrganizationLayoutMode.Full;
             var targetFileName = BuildTargetFileName(
                 originalName,
                 canUseDate ? captureDate : null,
                 item.NamedPeople,
-                includeDateInFileName,
-                includeNamedPeopleInFileName);
+                isFullLayout && includeDateInFileName,
+                isFullLayout && includeNamedPeopleInFileName);
             var targetPath = Path.Combine(targetFolder, targetFileName);
             var autoRenamed = false;
 
@@ -116,11 +116,12 @@ public sealed class OrganizationService
                     FileSize = item.FileSize,
                     LastWriteUtcTicks = item.LastWriteUtcTicks,
                     CaptureDateSource = item.CaptureDateSource,
+                    EmbeddedCaptureDate = embeddedCaptureDate,
                     DateDisplay = dateDisplay,
                     EventDisplay = eventDisplay,
                     Status = "Уже на месте",
                     StatusDetails = "Файл уже лежит точно по предлагаемому пути.",
-                    HasTrustedDate = trustedDate,
+                    HasTrustedDate = hasUsableTrustedDate,
                     IsReady = false,
                     IsAlreadyCorrect = true,
                     IsSelected = false,
@@ -173,18 +174,19 @@ public sealed class OrganizationService
                 FileSize = item.FileSize,
                 LastWriteUtcTicks = item.LastWriteUtcTicks,
                 CaptureDateSource = item.CaptureDateSource,
+                EmbeddedCaptureDate = embeddedCaptureDate,
                 DateDisplay = dateDisplay,
                 EventDisplay = eventDisplay,
                 Status = status,
                 StatusDetails = details,
-                HasTrustedDate = trustedDate,
+                HasTrustedDate = hasUsableTrustedDate,
                 IsReady = ready,
                 IsAlreadyCorrect = false,
                 WasAutoRenamed = autoRenamed,
                 CachedSha256 = item.Sha256,
                 HasValidCachedSha256 = IsValidCachedHash(item)
             };
-            row.IsSelected = ready && (trustedDate || useFallbackDates);
+            row.IsSelected = ready && canUseDate;
             plan.Add(row);
         }
 
@@ -217,6 +219,10 @@ public sealed class OrganizationService
 
                 try
                 {
+                    EnsureFileInsideRoot(item.SourcePath, item.SourceFolder, "исходный");
+                    EnsureFileInsideRoot(item.TargetPath, item.DestinationRoot, "целевой");
+                    EnsureNoReparsePoints(item.SourcePath, item.SourceFolder, "исходный");
+                    EnsureNoReparsePoints(item.TargetPath, item.DestinationRoot, "целевой");
                     await VerifyIndexedSignatureAsync(item.SourcePath, item.FileSize, item.LastWriteUtcTicks, ct);
                     if (File.Exists(item.TargetPath))
                         throw new IOException("Целевой файл появился после построения плана. Перезапись запрещена: " + item.TargetPath);
@@ -225,9 +231,17 @@ public sealed class OrganizationService
                         ? item.CachedSha256
                         : await ComputeSha256Async(item.SourcePath, ct);
 
-                    var originalLastWrite = File.GetLastWriteTimeUtc(item.SourcePath);
-                    await TransferVerifiedAsync(item.SourcePath, item.TargetPath, sha256, originalLastWrite, ct);
+                    var originalInfo = new FileInfo(item.SourcePath);
+                    var originalCreationUtc = originalInfo.CreationTimeUtc;
+                    var originalLastWriteUtc = originalInfo.LastWriteTimeUtc;
+                    var destinationCreationUtc = ResolveDestinationCreationUtc(
+                        item.EmbeddedCaptureDate, originalCreationUtc, item.SourcePath);
 
+                    await TransferVerifiedAsync(
+                        item.SourcePath, item.TargetPath, sha256,
+                        destinationCreationUtc, originalLastWriteUtc, ct);
+
+                    var movedInfo = new FileInfo(item.TargetPath);
                     try
                     {
                         await _database.RecordOrganizationMoveAsync(
@@ -238,11 +252,20 @@ public sealed class OrganizationService
                             item.DestinationRoot,
                             sha256,
                             item.FileSize,
-                            ct);
+                            originalLastWriteUtc.Ticks,
+                            originalCreationUtc.Ticks,
+                            movedInfo.LastWriteTimeUtc.Ticks,
+                            movedInfo.CreationTimeUtc.Ticks,
+                            CancellationToken.None);
                     }
                     catch
                     {
-                        try { await TransferVerifiedAsync(item.TargetPath, item.SourcePath, sha256, originalLastWrite, ct); }
+                        try
+                        {
+                            await TransferVerifiedAsync(
+                                item.TargetPath, item.SourcePath, sha256,
+                                originalCreationUtc, originalLastWriteUtc, CancellationToken.None);
+                        }
                         catch (Exception rollbackEx) { LoggingService.Error("CRITICAL: organization DB rollback failed", rollbackEx); }
                         throw;
                     }
@@ -276,24 +299,108 @@ public sealed class OrganizationService
     {
         if (!action.IsActive)
             throw new InvalidOperationException("Эта операция организации уже отменена.");
+
+        // Journal paths are treated as untrusted input. Even a damaged/manually edited SQLite row
+        // must not make Undo move an arbitrary file outside the roots recorded by the original plan.
+        EnsureFileInsideRoot(action.NewPath, action.NewSourceFolder, "текущий");
+        EnsureFileInsideRoot(action.OriginalPath, action.OriginalSourceFolder, "исходный");
+        EnsureNoReparsePoints(action.NewPath, action.NewSourceFolder, "текущий");
+        EnsureNoReparsePoints(action.OriginalPath, action.OriginalSourceFolder, "исходный");
+
         if (!File.Exists(action.NewPath))
             throw new FileNotFoundException("Перемещённый файл не найден по новому пути.", action.NewPath);
         if (File.Exists(action.OriginalPath))
             throw new IOException("По исходному пути уже существует файл. PAM ничего не будет перезаписывать: " + action.OriginalPath);
 
         await VerifyFileAsync(action.NewPath, action.FileSize, action.Sha256, cancellationToken);
-        var lastWrite = File.GetLastWriteTimeUtc(action.NewPath);
-        await TransferVerifiedAsync(action.NewPath, action.OriginalPath, action.Sha256, lastWrite, cancellationToken);
+        var movedInfo = new FileInfo(action.NewPath);
+        var movedCreationUtc = movedInfo.CreationTimeUtc;
+        var movedLastWriteUtc = movedInfo.LastWriteTimeUtc;
+        var restoreCreationUtc = TryDateTimeFromTicks(action.OriginalCreationUtcTicks, out var originalCreationUtc)
+            ? originalCreationUtc
+            : movedCreationUtc;
+        var restoreLastWriteUtc = TryDateTimeFromTicks(action.OriginalLastWriteUtcTicks, out var originalLastWriteUtc)
+            ? originalLastWriteUtc
+            : movedLastWriteUtc;
+        await TransferVerifiedAsync(
+            action.NewPath, action.OriginalPath, action.Sha256,
+            restoreCreationUtc, restoreLastWriteUtc, cancellationToken);
 
+        var restoredInfo = new FileInfo(action.OriginalPath);
         try
         {
-            await _database.MarkOrganizationMoveUndoneAsync(action.Id, action.FileId, cancellationToken);
+            await _database.MarkOrganizationMoveUndoneAsync(
+                action.Id, action.FileId,
+                restoredInfo.LastWriteTimeUtc.Ticks, restoredInfo.CreationTimeUtc.Ticks,
+                CancellationToken.None);
         }
         catch
         {
-            try { await TransferVerifiedAsync(action.OriginalPath, action.NewPath, action.Sha256, lastWrite, cancellationToken); }
+            try
+            {
+                await TransferVerifiedAsync(
+                    action.OriginalPath, action.NewPath, action.Sha256,
+                    movedCreationUtc, movedLastWriteUtc, CancellationToken.None);
+            }
             catch (Exception rollbackEx) { LoggingService.Error("CRITICAL: organization Undo DB rollback failed", rollbackEx); }
             throw;
+        }
+    }
+
+    private static void EnsureFileInsideRoot(string path, string root, string role)
+    {
+        if (string.IsNullOrWhiteSpace(path) || string.IsNullOrWhiteSpace(root))
+            throw new InvalidOperationException($"Защитная проверка пути организации не пройдена ({role} путь/корень пуст).");
+
+        var fullRoot = NormalizeDirectory(root);
+        var fullPath = Path.GetFullPath(path);
+        var relative = Path.GetRelativePath(fullRoot, fullPath);
+        if (relative == "." || relative == ".." || Path.IsPathRooted(relative) ||
+            relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            relative.StartsWith(".." + Path.AltDirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Защитная проверка PAM отказалась перемещать {role} файл вне записанного корня организации: {fullPath}");
+        }
+    }
+
+    private static void EnsureNoReparsePoints(string path, string root, string role)
+    {
+        var fullRoot = NormalizeDirectory(root);
+        var fullPath = Path.GetFullPath(path);
+        var relative = Path.GetRelativePath(fullRoot, fullPath);
+
+        RejectOrganizationReparsePoint(fullRoot, role);
+        var parts = relative.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar },
+            StringSplitOptions.RemoveEmptyEntries);
+        var current = fullRoot;
+        // Check every existing directory component. The final file itself is checked too when it
+        // already exists (source/Undo); a not-yet-created destination file is naturally skipped.
+        for (var i = 0; i < Math.Max(0, parts.Length - 1); i++)
+        {
+            current = Path.Combine(current, parts[i]);
+            RejectOrganizationReparsePoint(current, role);
+        }
+        if (File.Exists(fullPath) || Directory.Exists(fullPath))
+            RejectOrganizationReparsePoint(fullPath, role);
+    }
+
+    private static void RejectOrganizationReparsePoint(string path, string role)
+    {
+        if (!File.Exists(path) && !Directory.Exists(path)) return;
+        try
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidOperationException(
+                    $"Защитная проверка PAM запрещает физическую организацию через junction/symlink ({role}): {path}");
+        }
+        catch (InvalidOperationException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new IOException($"Не удалось безопасно проверить {role} путь организации: {path}", ex);
         }
     }
 
@@ -320,6 +427,42 @@ public sealed class OrganizationService
 
     private static bool IsValidCachedHash(OrganizationCandidate item) =>
         !string.IsNullOrWhiteSpace(item.Sha256) && item.HashFileSize == item.FileSize && item.HashLastWriteUtcTicks == item.LastWriteUtcTicks;
+
+    private static string BuildFullRelativeFolder(OrganizationCandidate item, DateTime captureDate, out string eventDisplay)
+    {
+        eventDisplay = "";
+        var eventStart = StoredDateTime.TryParse(item.EventStartDate, out var es) ? es : captureDate;
+        var eventEnd = StoredDateTime.TryParse(item.EventEndDate, out var ee) ? ee : eventStart;
+        if (eventEnd < eventStart) eventEnd = eventStart;
+        var eventNameIsOnlyLegacyDate = IsLegacyDateOnlyEventName(item.EventName, eventStart, eventEnd);
+        var eventNameAllowed = !string.IsNullOrWhiteSpace(item.EventName)
+                               && !item.EventIsAuto
+                               && !eventNameIsOnlyLegacyDate;
+        if (eventNameAllowed)
+        {
+            var monthPart = BuildMonthRange(eventStart.Date, eventEnd.Date);
+            var safeEvent = SanitizeSegment(item.EventName, 90);
+            eventDisplay = item.EventName;
+            return Path.Combine(eventStart.Year.ToString("0000"), $"{monthPart} — {safeEvent}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(item.EventName))
+        {
+            eventDisplay = eventNameIsOnlyLegacyDate
+                ? "Служебное название по дате не используется в папке: " + item.EventName
+                : item.EventIsAuto ? "Автособытие не использовано: " + item.EventName : item.EventName;
+        }
+        return Path.Combine(captureDate.Year.ToString("0000"), GetMonthAbbreviation(captureDate.Month));
+    }
+
+    private static string BuildQuickMonthFolder(int month) =>
+        month is >= 1 and <= 12 ? $"{month:00} — {RussianMonthNames[month - 1]}" : "00 — месяц";
+
+    private static readonly string[] RussianMonthNames =
+    [
+        "январь", "февраль", "март", "апрель", "май", "июнь",
+        "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"
+    ];
 
     private static readonly string[] RussianMonthAbbreviations =
     [
@@ -464,10 +607,20 @@ public sealed class OrganizationService
             throw new IOException("SHA-256 файла не совпадает с журналом. Операция отменена.");
     }
 
-    private static async Task TransferVerifiedAsync(string source, string destination, string expectedSha256, DateTime sourceLastWriteUtc, CancellationToken cancellationToken)
+    private static async Task TransferVerifiedAsync(
+        string source,
+        string destination,
+        string expectedSha256,
+        DateTime destinationCreationUtc,
+        DateTime destinationLastWriteUtc,
+        CancellationToken cancellationToken)
     {
         if (!File.Exists(source)) throw new FileNotFoundException("Исходный файл не найден.", source);
         if (File.Exists(destination)) throw new IOException("Целевой файл уже существует. Перезапись запрещена: " + destination);
+
+        var sourceInfo = new FileInfo(source);
+        var sourceCreationUtc = sourceInfo.CreationTimeUtc;
+        var sourceLastWriteUtc = sourceInfo.LastWriteTimeUtc;
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
 
         var sameVolume = string.Equals(
@@ -480,15 +633,28 @@ public sealed class OrganizationService
             File.Move(source, destination);
             try
             {
-                var movedHash = await ComputeSha256Async(destination, cancellationToken);
-                if (!string.Equals(movedHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
-                    throw new IOException("Контрольный SHA-256 после перемещения не совпал.");
+                // Full SHA-256 on the FINAL path proves that all embedded bytes survived unchanged,
+                // including EXIF/IPTC/XMP metadata and ICC profiles.
+                await VerifyFinalTransferredFileAsync(
+                    destination, expectedSha256, destinationCreationUtc, destinationLastWriteUtc, cancellationToken);
             }
             catch
             {
                 try
                 {
-                    if (File.Exists(destination) && !File.Exists(source)) File.Move(destination, source);
+                    if (File.Exists(destination) && !File.Exists(source))
+                    {
+                        var rollbackHash = await ComputeSha256Async(destination, CancellationToken.None);
+                        if (string.Equals(rollbackHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                        {
+                            File.Move(destination, source);
+                            ApplyAndVerifyFileDates(source, sourceCreationUtc, sourceLastWriteUtc);
+                        }
+                        else
+                        {
+                            LoggingService.Error("CRITICAL: same-volume rollback refused to move a destination whose SHA-256 no longer matches the transferred file.");
+                        }
+                    }
                 }
                 catch (Exception rollbackEx) { LoggingService.Error("CRITICAL: same-volume move rollback failed", rollbackEx); }
                 throw;
@@ -497,33 +663,159 @@ public sealed class OrganizationService
         }
 
         var temp = destination + ".pamtmp-" + Guid.NewGuid().ToString("N");
+        var sourceDirectory = Path.GetDirectoryName(source)
+            ?? throw new InvalidOperationException("У исходного файла отсутствует родительский каталог.");
+        var sourceTombstone = Path.Combine(
+            sourceDirectory,
+            ".pam-source-pending-" + Guid.NewGuid().ToString("N") + ".pamtmp");
+        var sourceTombstoned = false;
+        var destinationCreated = false;
         try
         {
             await CopyFileAsync(source, temp, cancellationToken);
-            File.SetLastWriteTimeUtc(temp, sourceLastWriteUtc);
-            var copiedHash = await ComputeSha256Async(temp, cancellationToken);
-            if (!string.Equals(copiedHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
-                throw new IOException("Контрольный SHA-256 скопированного файла не совпал.");
-            if (File.Exists(destination)) throw new IOException("Целевой файл появился во время копирования. Перезапись запрещена.");
+
+            // Freeze the exact source object by an atomic same-volume rename before anything is
+            // deleted. A different process can no longer replace source and make PAM delete a new
+            // file that merely appeared under the old path. The FINAL destination is verified below.
+            File.Move(source, sourceTombstone);
+            sourceTombstoned = true;
+            var tombstoneHash = await ComputeSha256Async(sourceTombstone, cancellationToken);
+            if (!string.Equals(tombstoneHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("Исходный файл изменился во время переноса. Удаление отменено.");
+
+            if (File.Exists(destination))
+                throw new IOException("Целевой файл появился во время копирования. Перезапись запрещена.");
             File.Move(temp, destination);
-            try
-            {
-                File.Delete(source);
-                if (File.Exists(source)) throw new IOException("После проверенного копирования Windows не удалила исходный файл.");
-            }
-            catch
-            {
-                // At this point source still exists, so the safest rollback is to remove only the verified copy.
-                try { if (File.Exists(source) && File.Exists(destination)) File.Delete(destination); }
-                catch (Exception rollbackEx) { LoggingService.Error("CRITICAL: cross-volume copy rollback failed", rollbackEx); }
-                throw;
-            }
+            destinationCreated = true;
+
+            // Verify the actual final object, not just the temporary copy. The source tombstone is
+            // deleted only after this final SHA-256 + filesystem-date verification succeeds.
+            await VerifyFinalTransferredFileAsync(
+                destination, expectedSha256, destinationCreationUtc, destinationLastWriteUtc, cancellationToken);
+
+            var finalTombstoneHash = await ComputeSha256Async(sourceTombstone, CancellationToken.None);
+            if (!string.Equals(finalTombstoneHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("Исходный tombstone изменился непосредственно перед удалением. Автоматическое удаление отменено.");
+            File.Delete(sourceTombstone);
+            if (File.Exists(sourceTombstone))
+                throw new IOException("После проверенного копирования Windows не удалила исходный tombstone.");
+            sourceTombstoned = false;
         }
         catch
         {
-            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+            // Roll back only objects created/moved by this transfer. If another process has already
+            // recreated the original path, never overwrite it; keep the verified tombstone for
+            // manual recovery and surface the failure.
+            try
+            {
+                if (destinationCreated && File.Exists(destination))
+                {
+                    var destinationHash = await ComputeSha256Async(destination, CancellationToken.None);
+                    if (string.Equals(destinationHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Delete(destination);
+                        destinationCreated = false;
+                    }
+                    else
+                    {
+                        LoggingService.Error("CRITICAL: rollback refused to delete a destination whose SHA-256 no longer matches the file created by PAM: " + destination);
+                    }
+                }
+                if (sourceTombstoned && File.Exists(sourceTombstone) && !File.Exists(source))
+                {
+                    var rollbackSourceHash = await ComputeSha256Async(sourceTombstone, CancellationToken.None);
+                    if (string.Equals(rollbackSourceHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
+                    {
+                        File.Move(sourceTombstone, source);
+                        ApplyAndVerifyFileDates(source, sourceCreationUtc, sourceLastWriteUtc);
+                        sourceTombstoned = false;
+                    }
+                    else
+                    {
+                        LoggingService.Error("CRITICAL: rollback refused to move a source tombstone whose SHA-256 changed: " + sourceTombstone);
+                    }
+                }
+            }
+            catch (Exception rollbackEx)
+            {
+                LoggingService.Error("CRITICAL: cross-volume move rollback failed; source tombstone=" + sourceTombstone, rollbackEx);
+            }
             throw;
         }
+        finally
+        {
+            try { if (File.Exists(temp)) File.Delete(temp); } catch { }
+        }
+    }
+
+    private static async Task VerifyFinalTransferredFileAsync(
+        string path,
+        string expectedSha256,
+        DateTime desiredCreationUtc,
+        DateTime desiredLastWriteUtc,
+        CancellationToken cancellationToken)
+    {
+        var finalHash = await ComputeSha256Async(path, cancellationToken);
+        if (!string.Equals(finalHash, expectedSha256, StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Контрольный SHA-256 конечного файла после переноса не совпал. Исходник не будет удалён.");
+
+        ApplyAndVerifyFileDates(path, desiredCreationUtc, desiredLastWriteUtc);
+    }
+
+    private static void ApplyAndVerifyFileDates(string path, DateTime desiredCreationUtc, DateTime desiredLastWriteUtc)
+    {
+        File.SetCreationTimeUtc(path, desiredCreationUtc);
+        File.SetLastWriteTimeUtc(path, desiredLastWriteUtc);
+
+        var info = new FileInfo(path);
+        VerifyFileDate("дата создания", info.CreationTimeUtc, desiredCreationUtc, path);
+        VerifyFileDate("дата изменения", info.LastWriteTimeUtc, desiredLastWriteUtc, path);
+    }
+
+    private static void VerifyFileDate(string label, DateTime actualUtc, DateTime desiredUtc, string path)
+    {
+        var delta = (actualUtc - desiredUtc).Duration();
+        // FAT-family filesystems can quantize timestamps. Up to 2 seconds is the maximum historical
+        // FAT write-time granularity; log the rounding but do not discard an otherwise verified photo.
+        if (delta > TimeSpan.FromSeconds(2))
+            throw new IOException($"Не удалось сохранить {label} файла после переноса: {path}");
+        if (delta > TimeSpan.Zero)
+            LoggingService.Warn($"Файловая система округлила {label} при переносе на {delta.TotalMilliseconds:0} мс: {path}");
+    }
+
+    private static DateTime ResolveDestinationCreationUtc(DateTime? embeddedCaptureDate, DateTime fallbackCreationUtc, string path)
+    {
+        if (!embeddedCaptureDate.HasValue) return fallbackCreationUtc;
+        try
+        {
+            // EXIF DateTimeOriginal normally has no timezone. Treat its wall-clock value as local
+            // Windows time so Explorer's 'Дата создания' displays the camera-recorded clock value.
+            var cameraTime = embeddedCaptureDate.Value;
+            var utc = cameraTime.Kind switch
+            {
+                DateTimeKind.Utc => cameraTime,
+                DateTimeKind.Local => cameraTime.ToUniversalTime(),
+                _ => DateTime.SpecifyKind(cameraTime, DateTimeKind.Local).ToUniversalTime()
+            };
+            _ = utc.ToFileTimeUtc(); // Validate Windows filesystem range before touching the source.
+            return utc;
+        }
+        catch (ArgumentException)
+        {
+            LoggingService.Warn("EXIF-дата не подходит для CreationTime Windows; сохранена исходная дата файла: " + path);
+            return fallbackCreationUtc;
+        }
+    }
+
+    private static bool TryDateTimeFromTicks(long ticks, out DateTime value)
+    {
+        if (ticks <= 0 || ticks > DateTime.MaxValue.Ticks)
+        {
+            value = default;
+            return false;
+        }
+        value = new DateTime(ticks, DateTimeKind.Utc);
+        return true;
     }
 
     private static async Task CopyFileAsync(string source, string destination, CancellationToken cancellationToken)

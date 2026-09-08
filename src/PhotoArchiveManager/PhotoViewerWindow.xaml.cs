@@ -1,8 +1,9 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using PhotoArchiveManager.Infrastructure;
 using PhotoArchiveManager.Models;
 using PhotoArchiveManager.Services;
 
@@ -72,11 +73,7 @@ public partial class PhotoViewerWindow : Window
             bitmap.Freeze();
 
             var orientation = _metadata.Read(path).Orientation;
-            if (orientation is not (3 or 6 or 8)) return bitmap;
-            var angle = orientation == 3 ? 180 : orientation == 6 ? 90 : 270;
-            var rotated = new TransformedBitmap(bitmap, new RotateTransform(angle));
-            rotated.Freeze();
-            return rotated;
+            return ExifOrientationHelper.Apply(bitmap, orientation);
         }
         catch (Exception ex)
         {

@@ -3,7 +3,7 @@ using PhotoArchiveManager.Services;
 
 namespace PhotoArchiveManager.Models;
 
-public sealed class PhotoItem : ObservableObject
+public sealed class PhotoItem
 {
     public long Id { get; init; }
     public string FullPath { get; init; } = "";
@@ -19,40 +19,7 @@ public sealed class PhotoItem : ObservableObject
     public string CameraModel { get; init; } = "";
     public string Error { get; init; } = "";
 
-    private bool _isFavorite;
-    public bool IsFavorite
-    {
-        get => _isFavorite;
-        set
-        {
-            if (SetProperty(ref _isFavorite, value))
-            {
-                OnPropertyChanged(nameof(FavoriteDisplay));
-                OnPropertyChanged(nameof(FavoriteButtonText));
-            }
-        }
-    }
-
-    private int _rating;
-    public int Rating
-    {
-        get => _rating;
-        set
-        {
-            var normalized = Math.Clamp(value, 0, 5);
-            if (SetProperty(ref _rating, normalized))
-            {
-                OnPropertyChanged(nameof(RatingDisplay));
-                OnPropertyChanged(nameof(RatingStars));
-            }
-        }
-    }
-
     public bool IsManualCaptureDate => CaptureDatePolicy.IsManual(CaptureDateSource);
-    public string FavoriteDisplay => IsFavorite ? "★" : "";
-    public string FavoriteButtonText => IsFavorite ? "★ В избранном" : "☆ В избранное";
-    public string RatingDisplay => Rating > 0 ? $"Рейтинг: {Rating}/5" : "Рейтинг: —";
-    public string RatingStars => Rating > 0 ? new string('★', Rating) + new string('☆', 5 - Rating) : "☆☆☆☆☆";
 
     public string CameraDisplay
     {
@@ -64,7 +31,7 @@ public sealed class PhotoItem : ObservableObject
     }
 
     public string CaptureDateDisplay =>
-        DateTime.TryParse(CaptureDate, out var value) ? value.ToString("dd.MM.yyyy HH:mm:ss") : "Дата: неизвестна";
+        StoredDateTime.TryParse(CaptureDate, out var value) ? value.ToString("dd.MM.yyyy HH:mm:ss") : "Дата: неизвестна";
 
     public string DimensionsDisplay => Width > 0 && Height > 0 ? $"{Width} × {Height}" : "Размер: —";
 

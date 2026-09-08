@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:PhotoArchiveManager.Converters"
         xmlns:models="clr-namespace:PhotoArchiveManager.Models"
-        Title="Photo Archive Manager · 1.7.1"
+        Title="Photo Archive Manager · 1.15.3"
         Icon="Assets/PhotoArchiveManager.ico"
         Width="1560" Height="940" MinWidth="1180" MinHeight="720"
         WindowStartupLocation="CenterScreen">
@@ -94,11 +94,11 @@
                                 <ComboBox ItemsSource="{Binding Years}" SelectedItem="{Binding SelectedYear}"/>
                                 <TextBlock Text="Камера" Margin="3,7,3,2"/>
                                 <ComboBox ItemsSource="{Binding Cameras}" SelectedItem="{Binding SelectedCamera}"/>
-                                <CheckBox Content="Только избранное" IsChecked="{Binding ShowFavoritesOnly}" Margin="4,9,3,3"/>
-                                <DockPanel Margin="3,4,3,0">
-                                    <TextBlock Text="Рейтинг от" VerticalAlignment="Center"/>
-                                    <ComboBox DockPanel.Dock="Right" Width="70" ItemsSource="{Binding RatingFilterOptions}" SelectedItem="{Binding SelectedMinRating}" ToolTip="0 — любой рейтинг"/>
-                                </DockPanel>
+                                <TextBlock Text="Статус" Margin="3,7,3,2"/>
+                                <ComboBox ItemsSource="{Binding ReviewFilterOptions}" SelectedItem="{Binding SelectedReviewFilter}"
+                                          ToolTip="«Требуют разбора» = нет надёжной даты, нет события или есть ошибка индексации/превью."/>
+                                <TextBlock Text="Сортировка" Margin="3,7,3,2"/>
+                                <ComboBox ItemsSource="{Binding PhotoSortOptions}" SelectedItem="{Binding SelectedPhotoSort}"/>
                                 <Button Content="Применить фильтры" Command="{Binding ApplyFiltersCommand}" Margin="3,10,3,3" Style="{StaticResource PrimaryButtonStyle}"/>
                                 <Button Content="Сбросить" Command="{Binding ResetFiltersCommand}"/>
 
@@ -135,17 +135,6 @@
                                     <MenuItem Header="Показать в Проводнике" Command="{Binding ShowInExplorerCommand}"/>
                                     <MenuItem Header="Открыть" Command="{Binding OpenPhotoCommand}"/>
                                     <Separator/>
-                                    <MenuItem Header="{Binding SelectedPhoto.FavoriteButtonText}" Command="{Binding ToggleFavoriteCommand}"/>
-                                    <MenuItem Header="Рейтинг">
-                                        <MenuItem Header="1 ★" Tag="1" Click="Rating_Click"/>
-                                        <MenuItem Header="2 ★" Tag="2" Click="Rating_Click"/>
-                                        <MenuItem Header="3 ★" Tag="3" Click="Rating_Click"/>
-                                        <MenuItem Header="4 ★" Tag="4" Click="Rating_Click"/>
-                                        <MenuItem Header="5 ★" Tag="5" Click="Rating_Click"/>
-                                        <Separator/>
-                                        <MenuItem Header="Сбросить рейтинг" Tag="0" Click="Rating_Click"/>
-                                    </MenuItem>
-                                    <Separator/>
                                     <MenuItem Header="Изменить дату выбранных…" Click="BatchDate_Click"/>
                                     <MenuItem Header="Назначить выбранным событие…" Click="BatchEvent_Click"/>
                                     <MenuItem Header="Исправить дату…" Command="{Binding EditPhotoCaptureDateCommand}"/>
@@ -173,8 +162,6 @@
                                             <TextBlock Text="{Binding CaptureDateDisplay}" HorizontalAlignment="Right"/>
                                             <TextBlock Text="{Binding DimensionsDisplay}" Foreground="{StaticResource SecondaryTextBrush}" HorizontalAlignment="Right" Margin="0,5,0,0"/>
                                             <TextBlock Text="{Binding FileSizeDisplay}" Foreground="{StaticResource SecondaryTextBrush}" HorizontalAlignment="Right"/>
-                                            <TextBlock Text="{Binding RatingStars}" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Right" FontSize="12" Margin="0,4,0,0"/>
-                                            <TextBlock Text="{Binding FavoriteDisplay}" Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Right" FontSize="16"/>
                                         </StackPanel>
                                     </Grid>
                                 </DataTemplate>
@@ -236,24 +223,16 @@
                                     <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SelectedPhoto.CaptureDateSource}" Margin="0,7,0,0"/>
                                 </Grid>
 
-                                <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-                                    <Button Content="Просмотр" Click="OpenViewer_Click" ToolTip="Полноэкранный просмотр · Space" Style="{StaticResource PrimaryButtonStyle}"/>
-                                    <Button Content="Показать в Проводнике" Command="{Binding ShowInExplorerCommand}"/>
-                                    <Button Content="Открыть" Command="{Binding OpenPhotoCommand}"/>
-                                </StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                    <Button Content="{Binding SelectedPhoto.FavoriteButtonText}" Command="{Binding ToggleFavoriteCommand}" ToolTip="Избранное хранится только в каталоге PAM"/>
-                                    <TextBlock Text="{Binding SelectedPhoto.RatingDisplay}" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="{StaticResource SecondaryTextBrush}"/>
-                                </StackPanel>
-                                <WrapPanel Margin="0,4,0,0">
-                                    <Button Content="1★" Tag="1" Click="Rating_Click" Padding="8,4" ToolTip="Рейтинг 1 из 5"/>
-                                    <Button Content="2★" Tag="2" Click="Rating_Click" Padding="8,4"/>
-                                    <Button Content="3★" Tag="3" Click="Rating_Click" Padding="8,4"/>
-                                    <Button Content="4★" Tag="4" Click="Rating_Click" Padding="8,4"/>
-                                    <Button Content="5★" Tag="5" Click="Rating_Click" Padding="8,4"/>
-                                    <Button Content="Сброс" Tag="0" Click="Rating_Click" Padding="8,4"/>
-                                </WrapPanel>
-
+                                <Grid Margin="0,14,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Button Grid.Column="0" Content="Просмотр" Click="OpenViewer_Click" ToolTip="Полноэкранный просмотр · Space"
+                                            Style="{StaticResource PrimaryButtonStyle}" Margin="0,2,3,2"/>
+                                    <Button Grid.Column="1" Content="Открыть" Command="{Binding OpenPhotoCommand}" Margin="3,2,0,2"/>
+                                </Grid>
+                                <Button Content="Показать в Проводнике" Command="{Binding ShowInExplorerCommand}" Margin="0,4,0,0"/>
                                 <Separator Margin="0,12,0,8"/>
                                 <TextBlock Text="Для выделенных фото" Style="{StaticResource SectionLabelStyle}" Margin="0,0,0,5"/>
                                 <Button Content="Изменить дату выбранных…" Click="BatchDate_Click" ToolTip="Ctrl/Shift: выделите несколько фото · Ctrl+Shift+D. Меняется только каталог PAM."/>
@@ -285,37 +264,64 @@
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource SeparatorBrush}" BorderThickness="0,0,0,1" Padding="8">
-                        <DockPanel LastChildFill="False">
-                            <StackPanel Orientation="Horizontal">
+                        <StackPanel>
+                            <WrapPanel>
                                 <Button Content="Найти точные дубли" Command="{Binding FindExactDuplicatesCommand}" Style="{StaticResource PrimaryButtonStyle}"/>
                                 <Button Content="Пауза" Command="{Binding PauseDuplicateAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Button Content="Продолжить" Command="{Binding ResumeDuplicateAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Button Content="Стоп" Command="{Binding StopDuplicateAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Separator Width="12" Opacity="0"/>
                                 <Button Content="Обновить результаты" Command="{Binding RefreshDuplicatesCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
-                                <Button Content="Мастер разбора…" Click="DuplicateWizard_Click" ToolTip="Рекомендует экземпляр, который оставить, для каждой SHA-256 группы"/>
-                            </StackPanel>
-                            <TextBlock DockPanel.Dock="Right" Text="{Binding DuplicateProgressText}" VerticalAlignment="Center" Foreground="{StaticResource SecondaryTextBrush}" TextTrimming="CharacterEllipsis" MaxWidth="300" Margin="15,0,5,0"/>
-                        </DockPanel>
+                                <Separator Width="12" Opacity="0"/>
+                                <TextBlock Text="Вид:" VerticalAlignment="Center" Margin="3,0,4,0"/>
+                                <ComboBox Width="160" ItemsSource="{Binding DuplicateViewModeOptions}" SelectedItem="{Binding SelectedDuplicateViewMode}" VerticalAlignment="Center"/>
+                                <Separator Width="14" Opacity="0"/>
+                                <CheckBox IsChecked="{Binding DeleteExactDuplicatesDirectly, Mode=TwoWay}" IsEnabled="{Binding CanPerformCatalogReview}"
+                                          ToolTip="По умолчанию выключено. При включении только подтверждённые полным SHA-256 точные копии удаляются напрямую, без карантина и Undo.">
+                                    <CheckBox.Style>
+                                        <Style TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding DeleteExactDuplicatesDirectly}" Value="True">
+                                                    <Setter Property="Foreground" Value="{StaticResource DangerTextBrush}"/>
+                                                    <Setter Property="FontWeight" Value="SemiBold"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </CheckBox.Style>
+                                    <TextBlock Text="Удалять сразу, без карантина и Undo"/>
+                                </CheckBox>
+                            </WrapPanel>
+                            <TextBlock Text="{Binding DuplicateProgressText}" Foreground="{StaticResource SecondaryTextBrush}"
+                                       FontSize="12" TextWrapping="Wrap" Margin="4,4,4,0"/>
+                            <TextBlock Text="{Binding ExactDuplicateRemovalModeText}" FontSize="12" TextWrapping="Wrap" Margin="4,3,4,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{StaticResource SecondaryTextBrush}"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding DeleteExactDuplicatesDirectly}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource DangerTextBrush}"/>
+                                                <Setter Property="FontWeight" Value="SemiBold"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
                     </Border>
 
                     <Border Grid.Row="1" Background="{StaticResource SurfaceSecondaryBrush}" BorderBrush="{StaticResource SeparatorBrush}" BorderThickness="0,0,0,1" Padding="12,8">
                         <StackPanel>
                             <TextBlock Text="{Binding DuplicateSummaryText}" FontWeight="SemiBold" TextWrapping="Wrap"/>
                             <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap"
-                                       Text="Группа подтверждена одинаковым размером и полным SHA-256. Выберите экземпляр, который оставить; остальные можно отправить в карантин."/>
-                            <DockPanel LastChildFill="False" Margin="0,7,0,0">
-                                <TextBlock Text="{Binding DuplicateReviewStatusText}" Foreground="{StaticResource SecondaryTextBrush}" VerticalAlignment="Center"/>
-                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                    <Button Content="‹" Command="{Binding PreviousDuplicateGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Предыдущая группа · Alt+←"/>
-                                    <Button Content="{Binding DuplicateReviewActionText}" Command="{Binding ToggleDuplicateReviewedCommand}" Style="{StaticResource PrimaryButtonStyle}" ToolTip="Переключить отметку «обработано» · Ctrl+Enter"/>
-                                    <Button Content="›" Command="{Binding NextDuplicateGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Следующая группа · Alt+→"/>
-                                </StackPanel>
-                            </DockPanel>
+                                       Visibility="{Binding IsDuplicateGroupView, Converter={StaticResource BoolToVisibility}}"
+                                       Text="Группа подтверждена одинаковым размером и полным SHA-256. Выберите экземпляр, который оставить; остальные можно убрать выбранным выше способом."/>
+                            <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap"
+                                       Visibility="{Binding IsDuplicateFolderView, Converter={StaticResource BoolToVisibility}}"
+                                       Text="Каждое пересечение папок A ↔ B показано один раз. Выберите пару слева; справа видны обе папки, а ниже — их общие SHA-256. Массовые действия всегда оставляют как минимум одну подтверждённую точную копию."/>
                         </StackPanel>
                     </Border>
 
-                    <Grid Grid.Row="2">
+                    <Grid Grid.Row="2" Visibility="{Binding IsDuplicateGroupView, Converter={StaticResource BoolToVisibility}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="280" MinWidth="250"/>
                             <ColumnDefinition Width="*" MinWidth="360"/>
@@ -360,7 +366,7 @@
                                         <MenuItem Header="Показать в Проводнике" Command="{Binding ShowDuplicateInExplorerCommand}"/>
                                         <MenuItem Header="Открыть" Command="{Binding OpenDuplicateFileCommand}"/>
                                         <Separator/>
-                                        <MenuItem Header="Оставить этот · остальные в карантин" Command="{Binding QuarantineOtherCopiesCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
+                                        <MenuItem Header="{Binding DuplicateOtherCopiesActionText}" Command="{Binding QuarantineOtherCopiesCommand}" Style="{StaticResource ExactDuplicateActionMenuItemStyle}"/>
                                     </ContextMenu>
                                 </ListBox.ContextMenu>
                                 <ListBox.ItemTemplate>
@@ -407,15 +413,191 @@
                                         <Button Content="Показать в Проводнике" Command="{Binding ShowDuplicateInExplorerCommand}"/>
                                         <Button Content="Открыть" Command="{Binding OpenDuplicateFileCommand}"/>
                                     </StackPanel>
-                                    <Button Content="Оставить этот · остальные в карантин"
+                                    <Button Content="{Binding DuplicateOtherCopiesActionText}"
                                             Command="{Binding QuarantineOtherCopiesCommand}"
-                                            FontWeight="SemiBold" Padding="12,8" Margin="0,12,0,0" Style="{StaticResource DangerButtonStyle}"/>
+                                            FontWeight="SemiBold" Padding="12,8" Margin="0,12,0,0" Style="{StaticResource ExactDuplicateActionButtonStyle}"/>
                                     <Border Style="{StaticResource InfoBorderStyle}" Margin="0,12,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}"
-                                                   Text="SHA-256 повторно проверяется перед карантином. Перенос обратим через Undo; окончательного удаления в этом разделе нет."/>
+                                                   Text="{Binding ExactDuplicateGroupSafetyText}"/>
                                     </Border>
                                 </StackPanel>
                             </ScrollViewer>
+                        </Border>
+                    </Grid>
+
+                    <Grid Grid.Row="2" Visibility="{Binding IsDuplicateFolderView, Converter={StaticResource BoolToVisibility}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="4*" MinHeight="230"/>
+                            <RowDefinition Height="5*" MinHeight="250"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="330" MinWidth="290"/>
+                            <ColumnDefinition Width="*" MinWidth="620"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Row="0" Grid.Column="0" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="0,0,1,0" Background="{StaticResource PanelBrush}">
+                            <DockPanel>
+                                <StackPanel DockPanel.Dock="Top" Margin="12,10,12,7">
+                                    <TextBlock Text="Пересекающиеся папки" Style="{StaticResource SectionLabelStyle}" Margin="0,0,0,5"/>
+                                    <TextBlock Text="Каждая пара A ↔ B показана только один раз." Foreground="{StaticResource SecondaryTextBrush}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,7"/>
+                                    <CheckBox IsChecked="{Binding ShowOnlyCompleteDuplicateFolderPairs}"
+                                              ToolTip="Оставляет пары, в которых все найденные exact-дубли хотя бы одной папки имеют копию во второй папке. Уникальные файлы не затрагиваются.">
+                                        <TextBlock Text="Только пары, где можно очистить ВСЕ дубли одной стороны" TextWrapping="Wrap"/>
+                                    </CheckBox>
+                                </StackPanel>
+                                <ListBox ItemsSource="{Binding DuplicateFolderIntersections}" SelectedItem="{Binding SelectedDuplicateFolderIntersection}"
+                                         BorderThickness="0" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="10,8">
+                                                <TextBlock Text="{Binding HeaderText}" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding SummaryText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                                <TextBlock Text="{Binding CoverageText}" Foreground="{StaticResource TertiaryTextBrush}" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </DockPanel>
+                        </Border>
+
+                        <Border Grid.Row="0" Grid.Column="1" Background="{StaticResource SurfaceBrush}">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel Margin="14,11">
+                                    <TextBlock Text="Папки выбранной пары" FontSize="15" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding DuplicatePairSummaryText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,3,0,9" TextWrapping="Wrap"/>
+                                    <TextBlock Text="Выберите A или B прямо на карточке. Единственная кнопка ниже уберёт дубли только из выбранной стороны текущей пары."
+                                               Foreground="{StaticResource SecondaryTextBrush}" FontSize="11" Margin="0,0,0,9" TextWrapping="Wrap"/>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+
+                                        <Border Grid.Column="0" Margin="0,0,5,0" Padding="10">
+                                            <Border.Style>
+                                                <Style TargetType="Border" BasedOn="{StaticResource InfoBorderStyle}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding RemoveDuplicatePairFromLeft}" Value="True">
+                                                            <Setter Property="Background" Value="{StaticResource AccentSoftBrush}"/>
+                                                            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                                            <Setter Property="BorderThickness" Value="2"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <Grid>
+                                                <RadioButton GroupName="DuplicatePairCardSide" IsChecked="{Binding RemoveDuplicatePairFromLeft, Mode=TwoWay}"
+                                                             HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" Margin="0,0,88,0" Padding="0">
+                                                    <StackPanel>
+                                                        <TextBlock Text="A · выбрать эту сторону" FontWeight="Bold" FontSize="15"/>
+                                                        <TextBlock Text="{Binding SelectedDuplicateFolderIntersection.FolderAPath}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                                        <TextBlock Text="{Binding SelectedDuplicateFolder.SummaryText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                                        <TextBlock Text="{Binding SelectedDuplicateFolderIntersection.ACoverageText}" Foreground="{StaticResource TertiaryTextBrush}" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                                    </StackPanel>
+                                                </RadioButton>
+                                                <Button Content="Открыть A" Command="{Binding ShowDuplicateFolderInExplorerCommand}" Style="{StaticResource ToolbarButtonStyle}"
+                                                        HorizontalAlignment="Right" VerticalAlignment="Top"/>
+                                            </Grid>
+                                        </Border>
+
+                                        <Border Grid.Column="1" Margin="5,0,0,0" Padding="10">
+                                            <Border.Style>
+                                                <Style TargetType="Border" BasedOn="{StaticResource InfoBorderStyle}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding RemoveDuplicatePairFromRight}" Value="True">
+                                                            <Setter Property="Background" Value="{StaticResource AccentSoftBrush}"/>
+                                                            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                                            <Setter Property="BorderThickness" Value="2"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
+                                            <Grid>
+                                                <RadioButton GroupName="DuplicatePairCardSide" IsChecked="{Binding RemoveDuplicatePairFromRight, Mode=TwoWay}"
+                                                             HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" Margin="0,0,88,0" Padding="0">
+                                                    <StackPanel>
+                                                        <TextBlock Text="B · выбрать эту сторону" FontWeight="Bold" FontSize="15"/>
+                                                        <TextBlock Text="{Binding SelectedDuplicateFolderIntersection.FolderBPath}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                                        <TextBlock Text="{Binding SelectedDuplicateFolderRight.SummaryText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"/>
+                                                        <TextBlock Text="{Binding SelectedDuplicateFolderIntersection.BCoverageText}" Foreground="{StaticResource TertiaryTextBrush}" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                                    </StackPanel>
+                                                </RadioButton>
+                                                <Button Content="Открыть B" Command="{Binding ShowDuplicateFolderMatchInExplorerCommand}" Style="{StaticResource ToolbarButtonStyle}"
+                                                        HorizontalAlignment="Right" VerticalAlignment="Top"/>
+                                            </Grid>
+                                        </Border>
+                                    </Grid>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+
+                        <Border Grid.Row="1" Grid.ColumnSpan="2" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="0,1,0,0">
+                            <Grid Margin="12,10">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0">
+                                    <TextBlock Text="Точные совпадения выбранной пары A ↔ B" FontSize="16" FontWeight="SemiBold"/>
+                                    <TextBlock Text="Одна строка = один общий SHA-256. Другие папки этим действием не затрагиваются." Foreground="{StaticResource SecondaryTextBrush}" FontSize="11" Margin="0,3,0,0"/>
+                                </StackPanel>
+
+                                <DockPanel Grid.Row="1" LastChildFill="True" Margin="0,9,0,7">
+                                    <Button DockPanel.Dock="Right" Content="{Binding DuplicatePairActionText}" Command="{Binding QuarantineDuplicateFolderPairSideCommand}"
+                                            Style="{StaticResource ExactDuplicateActionButtonStyle}" Padding="13,8" Margin="12,0,0,0" FontWeight="SemiBold"/>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding DuplicatePairSelectionText}" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                        <TextBlock Text="Сторона выбирается только карточками A/B выше. В карантинном режиме кнопка синяя; при прямом удалении — красная."
+                                                   Foreground="{StaticResource SecondaryTextBrush}" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                                    </StackPanel>
+                                </DockPanel>
+
+                                <Grid Grid.Row="2">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+                                    <Grid Grid.Row="0" Background="{StaticResource SurfaceSecondaryBrush}" Margin="0,0,0,1">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="5*"/>
+                                            <ColumnDefinition Width="180"/>
+                                            <ColumnDefinition Width="5*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Файлы в A" FontWeight="SemiBold" Margin="9,6"/>
+                                        <TextBlock Grid.Column="1" Text="Размер · SHA-256" FontWeight="SemiBold" Margin="9,6" HorizontalAlignment="Center"/>
+                                        <TextBlock Grid.Column="2" Text="Файлы в B" FontWeight="SemiBold" Margin="9,6"/>
+                                    </Grid>
+                                    <ListBox Grid.Row="1" ItemsSource="{Binding DuplicateFolderPairRows}" BorderThickness="0" HorizontalContentAlignment="Stretch"
+                                             VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="6,5">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="5*"/>
+                                                        <ColumnDefinition Width="180"/>
+                                                        <ColumnDefinition Width="5*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel Grid.Column="0" Margin="4,2,12,2">
+                                                        <TextBlock Text="{Binding LeftFilesText}" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding LeftCountText}" Foreground="{StaticResource TertiaryTextBrush}" FontSize="11" Margin="0,3,0,0"/>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding SizeText}" HorizontalAlignment="Center"/>
+                                                        <TextBlock Text="{Binding HashShort}" FontFamily="Consolas" Foreground="{StaticResource TertiaryTextBrush}" FontSize="11" Margin="0,3,0,0" HorizontalAlignment="Center"/>
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="2" Margin="12,2,4,2">
+                                                        <TextBlock Text="{Binding RightFilesText}" TextWrapping="Wrap" FontWeight="SemiBold"/>
+                                                        <TextBlock Text="{Binding RightCountText}" Foreground="{StaticResource TertiaryTextBrush}" FontSize="11" Margin="0,3,0,0"/>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Grid>
+                            </Grid>
                         </Border>
                     </Grid>
                 </Grid>
@@ -434,17 +616,11 @@
                                 <TextBlock Text="{Binding VisualDuplicateSummaryText}" FontWeight="SemiBold" TextWrapping="Wrap"/>
                                 <TextBlock Text="{Binding VisualDuplicateProgressText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                 <TextBlock Text="{Binding QualityProgressText}" Foreground="{StaticResource SuccessTextBrush}" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                                    <TextBlock Text="{Binding VisualReviewStatusText}" Foreground="{StaticResource SecondaryTextBrush}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                    <Button Content="‹" Command="{Binding PreviousVisualGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Предыдущая группа · Alt+←"/>
-                                    <Button Content="{Binding VisualReviewActionText}" Command="{Binding ToggleVisualReviewedCommand}" Style="{StaticResource PrimaryButtonStyle}" ToolTip="Переключить отметку «обработано» · Ctrl+Enter"/>
-                                    <Button Content="›" Command="{Binding NextVisualGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Следующая группа · Alt+→"/>
-                                </StackPanel>
                             </StackPanel>
-                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
                                 <TextBlock Text="Чувствительность:" VerticalAlignment="Center" Margin="0,0,5,0"/>
                                 <ComboBox Width="62" ItemsSource="{Binding VisualThresholdOptions}" SelectedItem="{Binding SelectedVisualThreshold}"/>
-                                <Button Content="Найти похожие" Command="{Binding FindVisualDuplicatesCommand}" FontWeight="SemiBold" Style="{StaticResource PrimaryButtonStyle}"/>
+                                <Button Content="Найти похожие" Command="{Binding FindVisualDuplicatesCommand}" FontWeight="SemiBold" Style="{StaticResource PrimaryButtonStyle}" VerticalAlignment="Center"/>
                                 <Button Content="Из кэша" Command="{Binding RefreshVisualDuplicatesCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Button Content="Пауза" Command="{Binding PauseVisualAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Button Content="Продолжить" Command="{Binding ResumeVisualAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
@@ -481,13 +657,11 @@
                                     <MenuItem Header="Показать в Проводнике" Command="{Binding ShowVisualInExplorerCommand}"/>
                                     <MenuItem Header="Открыть" Command="{Binding OpenVisualFileCommand}"/>
                                     <Separator/>
-                                    <MenuItem Header="Оставить" IsCheckable="True" IsChecked="{Binding SelectedVisualDuplicateFile.IsManualKeeper, Mode=TwoWay}"/>
-                                    <MenuItem Header="В карантин" IsCheckable="True" IsChecked="{Binding SelectedVisualDuplicateFile.IsMarkedForQuarantine, Mode=TwoWay}" IsEnabled="{Binding SelectedVisualDuplicateFile.CanMarkForQuarantine}"/>
+                                    <MenuItem Header="В карантин" IsCheckable="True" IsChecked="{Binding SelectedVisualDuplicateFile.IsMarkedForQuarantine, Mode=TwoWay}"/>
                                     <Separator/>
                                     <MenuItem Header="Сравнить 2–8 кадров" Click="CompareVisual_Click"/>
                                     <MenuItem Header="Оценить качество всей группы" Command="{Binding AnalyzeSelectedQualityCommand}"/>
-                                    <MenuItem Header="Оставить выбранный" Command="{Binding SetVisualKeeperCommand}"/>
-                                    <MenuItem Header="Сбросить ручные отметки" Command="{Binding ClearVisualReviewCommand}"/>
+                                    <MenuItem Header="Снять все галочки" Command="{Binding ClearVisualReviewCommand}"/>
                                     <Separator/>
                                     <MenuItem Header="В карантин отмеченные" Command="{Binding QuarantineMarkedVisualCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
                                 </ContextMenu>
@@ -510,14 +684,12 @@
                                             <TextBlock Text="{Binding FileSizeDisplay}" Foreground="{StaticResource SecondaryTextBrush}"/>
                                         </StackPanel>
                                         <StackPanel Grid.Column="2" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding ManualKeeperDisplay}" Foreground="{StaticResource SuccessTextBrush}" FontWeight="Bold" FontSize="11" HorizontalAlignment="Right"/>
                                             <TextBlock Text="{Binding RecommendedDisplay}" Foreground="{StaticResource SuccessTextBrush}" FontWeight="Bold" FontSize="11" HorizontalAlignment="Right"/>
                                             <TextBlock Text="{Binding QualityDisplay}" FontSize="18" FontWeight="Bold" HorizontalAlignment="Right"/>
                                             <TextBlock Text="Quality" Foreground="{StaticResource TertiaryTextBrush}" FontSize="11" HorizontalAlignment="Right"/>
                                             <TextBlock Text="{Binding SimilarityDisplay}" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Right"/>
                                             <TextBlock Text="сходство" Foreground="{StaticResource TertiaryTextBrush}" FontSize="10" HorizontalAlignment="Right"/>
-                                            <CheckBox Content="Оставить" IsChecked="{Binding IsManualKeeper, Mode=TwoWay}" Margin="0,6,0,0" HorizontalAlignment="Right" FontWeight="SemiBold"/>
-                                            <CheckBox Content="в карантин" IsChecked="{Binding IsMarkedForQuarantine, Mode=TwoWay}" IsEnabled="{Binding CanMarkForQuarantine}" Margin="0,4,0,0" HorizontalAlignment="Right"/>
+                                            <CheckBox Content="в карантин" IsChecked="{Binding IsMarkedForQuarantine, Mode=TwoWay}" Margin="0,8,0,0" HorizontalAlignment="Right" FontWeight="SemiBold"/>
                                         </StackPanel>
                                     </Grid>
                                 </DataTemplate>
@@ -533,12 +705,12 @@
                                     </Border>
                                     <TextBlock Text="{Binding SelectedVisualDuplicateFile.FileName}" Style="{StaticResource InspectorHeaderStyle}"/>
                                     <TextBlock Text="{Binding SelectedVisualDuplicateFile.FullPath}" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,4,0,10"/>
-                                    <TextBlock Text="{Binding SelectedVisualDuplicateFile.ManualKeeperDisplay}" Foreground="{StaticResource SuccessTextBrush}" FontSize="13" FontWeight="Bold" Margin="0,0,0,2"/>
                                     <TextBlock Text="{Binding SelectedVisualDuplicateFile.RecommendedDisplay}" Foreground="{StaticResource SuccessTextBrush}" FontSize="13" FontWeight="Bold" Margin="0,0,0,4"/>
                                     <TextBlock FontWeight="SemiBold"><Run Text="Сходство: "/><Run Text="{Binding SelectedVisualDuplicateFile.SimilarityDisplay, Mode=OneWay}"/></TextBlock>
-                                    <TextBlock Margin="0,8,0,0" FontWeight="Bold" FontSize="15"><Run Text="Quality Score: "/><Run Text="{Binding SelectedVisualDuplicateFile.QualityDisplay, Mode=OneWay}"/></TextBlock>
+                                    <TextBlock Margin="0,8,0,0" FontWeight="Bold" FontSize="15"><Run Text="Quality Score v3.3: "/><Run Text="{Binding SelectedVisualDuplicateFile.QualityDisplay, Mode=OneWay}"/></TextBlock>
                                     <TextBlock Text="{Binding SelectedVisualDuplicateFile.QualityComponentsDisplay}" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding SelectedVisualDuplicateFile.FaceDisplay}" FontSize="12" Foreground="{StaticResource SuccessTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                    <TextBlock Text="{Binding SelectedVisualDuplicateFile.BlinkWarningDisplay}" Visibility="{Binding SelectedVisualDuplicateFile.HasBlinkWarning, Converter={StaticResource BoolToVisibility}}" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding SelectedVisualDuplicateFile.QualityNotes}" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding SelectedVisualDuplicateFile.CaptureDateDisplay}" Margin="0,9,0,0"/>
                                     <TextBlock Text="{Binding SelectedVisualDuplicateFile.DimensionsDisplay}" Margin="0,5,0,0"/>
@@ -557,12 +729,11 @@
                                     </StackPanel>
                                     <Separator Margin="0,12,0,8"/>
                                     <TextBlock Text="Ручной разбор группы" Style="{StaticResource SectionLabelStyle}" Margin="0,0,0,5"/>
-                                    <Button Content="Оставить выбранный" Command="{Binding SetVisualKeeperCommand}" FontWeight="SemiBold" Margin="3,2"/>
                                     <Button Content="В карантин отмеченные" Command="{Binding QuarantineMarkedVisualCommand}" FontWeight="SemiBold" Margin="3,2" Style="{StaticResource DangerButtonStyle}"/>
-                                    <Button Content="Сбросить ручные отметки" Command="{Binding ClearVisualReviewCommand}" Margin="3,2"/>
+                                    <Button Content="Снять все галочки" Command="{Binding ClearVisualReviewCommand}" Margin="3,2"/>
                                     <Border Style="{StaticResource WarningBorderStyle}" Margin="0,12,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource WarningTextBrush}"
-                                                   Text="Похожесть не доказывает дубль. Отметьте один или несколько кадров «Оставить» и только потом отмечайте остальные для карантина. Quality Score — лишь техническая подсказка."/>
+                                                   Text="Похожесть не доказывает дубль. Единственная ручная отметка — «в карантин»: отмеченные файлы будут убраны, все неотмеченные останутся на месте. PAM не позволит отправить в карантин всю группу. Quality Score v3.3 — только локальная техническая/лицевая подсказка."/>
                                     </Border>
                                 </StackPanel>
                             </ScrollViewer>
@@ -584,20 +755,14 @@
                                 <TextBlock Text="{Binding BurstSummaryText}" FontWeight="SemiBold" TextWrapping="Wrap"/>
                                 <TextBlock Text="{Binding BurstProgressText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="0,4,0,0" TextWrapping="Wrap"/>
                                 <TextBlock Text="{Binding BurstQualityProgressText}" Foreground="{StaticResource SuccessTextBrush}" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                                    <TextBlock Text="{Binding BurstReviewStatusText}" Foreground="{StaticResource SecondaryTextBrush}" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                    <Button Content="‹" Command="{Binding PreviousBurstGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Предыдущая серия · Alt+←"/>
-                                    <Button Content="{Binding BurstReviewActionText}" Command="{Binding ToggleBurstReviewedCommand}" Style="{StaticResource PrimaryButtonStyle}" ToolTip="Переключить отметку «обработано» · Ctrl+Enter"/>
-                                    <Button Content="›" Command="{Binding NextBurstGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Следующая серия · Alt+→"/>
-                                </StackPanel>
                             </StackPanel>
-                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0">
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="12,0,0,0" VerticalAlignment="Center">
                                 <TextBlock Text="Пауза между кадрами:" VerticalAlignment="Center" Margin="0,0,4,0"/>
                                 <ComboBox Width="65" ItemsSource="{Binding BurstGapOptions}" SelectedItem="{Binding SelectedBurstMaxGap}"/>
                                 <TextBlock Text="с" VerticalAlignment="Center" Margin="0,0,8,0"/>
                                 <TextBlock Text="Мин.:" VerticalAlignment="Center" Margin="0,0,4,0"/>
                                 <ComboBox Width="55" ItemsSource="{Binding BurstMinSizeOptions}" SelectedItem="{Binding SelectedBurstMinSize}"/>
-                                <Button Content="Найти серии" Command="{Binding FindBurstsCommand}" FontWeight="SemiBold" Style="{StaticResource PrimaryButtonStyle}"/>
+                                <Button Content="Найти серии" Command="{Binding FindBurstsCommand}" FontWeight="SemiBold" Style="{StaticResource PrimaryButtonStyle}" VerticalAlignment="Center"/>
                                 <Button Content="Из кэша" Command="{Binding RefreshBurstsCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Button Content="Пауза" Command="{Binding PauseBurstAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Button Content="Продолжить" Command="{Binding ResumeBurstAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
@@ -635,14 +800,13 @@
                                     <MenuItem Header="Показать в Проводнике" Command="{Binding ShowBurstInExplorerCommand}"/>
                                     <MenuItem Header="Открыть" Command="{Binding OpenBurstFileCommand}"/>
                                     <Separator/>
-                                    <MenuItem Header="Оставить" IsCheckable="True" IsChecked="{Binding SelectedBurstFile.IsManualKeeper, Mode=TwoWay}"/>
-                                    <MenuItem Header="В карантин" IsCheckable="True" IsChecked="{Binding SelectedBurstFile.IsMarkedForQuarantine, Mode=TwoWay}" IsEnabled="{Binding SelectedBurstFile.CanMarkForQuarantine}"/>
+                                    <MenuItem Header="В карантин" IsCheckable="True" IsChecked="{Binding SelectedBurstFile.IsMarkedForQuarantine, Mode=TwoWay}"/>
                                     <Separator/>
                                     <MenuItem Header="Сравнить до 8 кадров" Click="CompareBurst_Click"/>
                                     <MenuItem Header="Оценить качество всей серии" Command="{Binding AnalyzeSelectedBurstQualityCommand}"/>
                                     <MenuItem Header="Принять рекомендацию" Command="{Binding ApplyBurstRecommendationCommand}"/>
                                     <MenuItem Header="Отметить остальные в карантин" Command="{Binding MarkBurstOthersCommand}"/>
-                                    <MenuItem Header="Сбросить ручные отметки" Command="{Binding ClearBurstReviewCommand}"/>
+                                    <MenuItem Header="Снять все галочки" Command="{Binding ClearBurstReviewCommand}"/>
                                     <Separator/>
                                     <MenuItem Header="В карантин отмеченные" Command="{Binding QuarantineMarkedBurstCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
                                 </ContextMenu>
@@ -668,8 +832,7 @@
                                             <TextBlock Text="{Binding RecommendedDisplay}" Foreground="{StaticResource SuccessTextBrush}" FontWeight="Bold" FontSize="11" HorizontalAlignment="Right"/>
                                             <TextBlock Text="{Binding QualityDisplay}" FontSize="18" FontWeight="Bold" HorizontalAlignment="Right"/>
                                             <TextBlock Text="Quality" Foreground="{StaticResource TertiaryTextBrush}" FontSize="10" HorizontalAlignment="Right"/>
-                                            <CheckBox Content="Оставить" IsChecked="{Binding IsManualKeeper, Mode=TwoWay}" Margin="0,6,0,0" HorizontalAlignment="Right" FontWeight="SemiBold"/>
-                                            <CheckBox Content="в карантин" IsChecked="{Binding IsMarkedForQuarantine, Mode=TwoWay}" IsEnabled="{Binding CanMarkForQuarantine}" Margin="0,4,0,0" HorizontalAlignment="Right"/>
+                                            <CheckBox Content="в карантин" IsChecked="{Binding IsMarkedForQuarantine, Mode=TwoWay}" Margin="0,8,0,0" HorizontalAlignment="Right" FontWeight="SemiBold"/>
                                         </StackPanel>
                                     </Grid>
                                 </DataTemplate>
@@ -690,10 +853,10 @@
                                     <TextBlock Text="{Binding SelectedBurstFile.FileName}" Style="{StaticResource InspectorHeaderStyle}"/>
                                     <TextBlock Text="{Binding SelectedBurstFile.FullPath}" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,4,0,8"/>
                                     <TextBlock Text="{Binding SelectedBurstFile.RecommendedDisplay}" Foreground="{StaticResource SuccessTextBrush}" FontSize="13" FontWeight="Bold"/>
-                                    <TextBlock Text="{Binding SelectedBurstFile.ManualKeeperDisplay}" Foreground="{StaticResource SuccessTextBrush}" FontSize="12" FontWeight="Bold"/>
-                                    <TextBlock Margin="0,7,0,0" FontWeight="Bold" FontSize="15"><Run Text="Quality Score: "/><Run Text="{Binding SelectedBurstFile.QualityDisplay, Mode=OneWay}"/></TextBlock>
+                                    <TextBlock Margin="0,7,0,0" FontWeight="Bold" FontSize="15"><Run Text="Quality Score v3.3: "/><Run Text="{Binding SelectedBurstFile.QualityDisplay, Mode=OneWay}"/></TextBlock>
                                     <TextBlock Text="{Binding SelectedBurstFile.QualityComponentsDisplay}" FontSize="12" Foreground="{StaticResource SecondaryTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding SelectedBurstFile.FaceDisplay}" FontSize="12" Foreground="{StaticResource SuccessTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                    <TextBlock Text="{Binding SelectedBurstFile.BlinkWarningDisplay}" Visibility="{Binding SelectedBurstFile.HasBlinkWarning, Converter={StaticResource BoolToVisibility}}" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource WarningTextBrush}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                                     <TextBlock Text="{Binding SelectedBurstFile.CaptureDateDisplay}" Margin="0,9,0,0"/>
                                     <TextBlock Text="{Binding SelectedBurstFile.DimensionsDisplay}" Margin="0,5,0,0"/>
                                     <TextBlock Text="{Binding SelectedBurstFile.FileSizeDisplay}" Margin="0,5,0,0"/>
@@ -717,10 +880,10 @@
                                         <TextBlock Text="Рекомендовать оставить:" VerticalAlignment="Center" Margin="3,0,5,0"/>
                                         <ComboBox Width="60" ItemsSource="{Binding BurstKeepCountOptions}" SelectedItem="{Binding SelectedBurstKeepCount}"/>
                                     </StackPanel>
-                                    <Button Content="Принять рекомендацию" Command="{Binding ApplyBurstRecommendationCommand}" FontWeight="SemiBold" Margin="3,5,3,2"/>
+                                    <Button Content="Применить рекомендацию" Command="{Binding ApplyBurstRecommendationCommand}" FontWeight="SemiBold" Margin="3,5,3,2" ToolTip="Отметить в карантин все кадры, кроме рекомендованных PAM"/>
                                     <Button Content="Отметить остальные в карантин" Command="{Binding MarkBurstOthersCommand}" Margin="3,2"/>
                                     <Button Content="В карантин отмеченные" Command="{Binding QuarantineMarkedBurstCommand}" FontWeight="SemiBold" Margin="3,2" Style="{StaticResource DangerButtonStyle}"/>
-                                    <Button Content="Сбросить ручные отметки" Command="{Binding ClearBurstReviewCommand}" Margin="3,2"/>
+                                    <Button Content="Снять все галочки" Command="{Binding ClearBurstReviewCommand}" Margin="3,2"/>
 
                                     <Border Style="{StaticResource SuccessBorderStyle}" Margin="0,10,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource SuccessTextBrush}"
@@ -728,7 +891,7 @@
                                     </Border>
                                     <Border Style="{StaticResource WarningBorderStyle}" Margin="0,10,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource WarningTextBrush}"
-                                                   Text="Рекомендация только ставит галочки. Физический перенос выполняется отдельно через карантин."/>
+                                                   Text="Неотмеченные кадры остаются. Галочка «в карантин» означает только намерение убрать кадр; физический перенос выполняется отдельно кнопкой «В карантин отмеченные». PAM не позволит отметить к выполнению всю серию без оставшегося кадра."/>
                                     </Border>
                                 </StackPanel>
                             </ScrollViewer>
@@ -746,8 +909,8 @@
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource SeparatorBrush}" BorderThickness="0,0,0,1" Padding="9,7">
-                        <DockPanel LastChildFill="False">
-                            <StackPanel Orientation="Horizontal">
+                        <StackPanel>
+                            <WrapPanel>
                                 <Button Content="Индексировать лица" Command="{Binding AnalyzePeopleCommand}" FontWeight="SemiBold" Style="{StaticResource PrimaryButtonStyle}"/>
                                 <Button Content="Пауза" Command="{Binding PausePeopleAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Button Content="Продолжить" Command="{Binding ResumePeopleAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
@@ -759,9 +922,10 @@
                                 <ComboBox Width="58" ItemsSource="{Binding PeopleMinGroupSizeOptions}" SelectedItem="{Binding SelectedPeopleMinGroupSize}"/>
                                 <Button Content="Сгруппировать" Command="{Binding GroupPeopleCommand}" FontWeight="SemiBold" Margin="8,3,3,3" Style="{StaticResource PrimaryButtonStyle}"/>
                                 <Button Content="Обновить" Command="{Binding RefreshPeopleCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
-                            </StackPanel>
-                            <TextBlock DockPanel.Dock="Right" Text="{Binding PeopleProgressText}" VerticalAlignment="Center" Foreground="{StaticResource SecondaryTextBrush}" TextTrimming="CharacterEllipsis" MaxWidth="300" Margin="12,0,4,0"/>
-                        </DockPanel>
+                            </WrapPanel>
+                            <TextBlock Text="{Binding PeopleProgressText}" Foreground="{StaticResource SecondaryTextBrush}"
+                                       FontSize="12" TextWrapping="Wrap" Margin="4,4,4,0"/>
+                        </StackPanel>
                     </Border>
 
                     <Border Grid.Row="1" Background="{StaticResource SurfaceSecondaryBrush}" BorderBrush="{StaticResource SeparatorBrush}" BorderThickness="0,0,0,1" Padding="11,7">
@@ -769,14 +933,10 @@
                             <TextBlock Text="{Binding PeopleSummaryText}" FontWeight="SemiBold" TextWrapping="Wrap"/>
                             <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap"
                                        Text="Распознавание локальное. Автогруппы — предложения; названные вручную группы не пересобираются автоматически. Лицо можно перетащить на другую группу слева."/>
-                            <DockPanel LastChildFill="False" Margin="0,7,0,0">
-                                <TextBlock Text="{Binding PeopleReviewStatusText}" Foreground="{StaticResource SecondaryTextBrush}" VerticalAlignment="Center"/>
-                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                    <Button Content="‹" Command="{Binding PreviousPersonGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Предыдущая группа людей · Alt+←"/>
-                                    <Button Content="{Binding PeopleReviewActionText}" Command="{Binding TogglePersonReviewedCommand}" Style="{StaticResource PrimaryButtonStyle}" ToolTip="Переключить отметку «обработано» · Ctrl+Enter"/>
-                                    <Button Content="›" Command="{Binding NextPersonGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Следующая группа людей · Alt+→"/>
-                                </StackPanel>
-                            </DockPanel>
+                            <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"
+                                       Text="Ctrl/Shift: можно выделить несколько групп людей. Объединение, расформирование и исключение применяются ко всему выделению."/>
+                            <TextBlock Margin="0,4,0,0" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"
+                                       Text="{Binding PersonSelectionSummaryText}"/>
                         </StackPanel>
                     </Border>
 
@@ -788,18 +948,18 @@
                             <ColumnDefinition Width="340" MinWidth="280"/>
                         </Grid.ColumnDefinitions>
 
-                        <ListBox x:Name="PersonGroupsList" Grid.Column="0" ItemsSource="{Binding PersonGroups}" SelectedItem="{Binding SelectedPersonGroup}" AllowDrop="True" PreviewDragOver="PersonGroupsList_PreviewDragOver" Drop="PersonGroupsList_Drop" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
+                        <ListBox x:Name="PersonGroupsList" Grid.Column="0" ItemsSource="{Binding PersonGroups}" SelectedItem="{Binding SelectedPersonGroup}" SelectionMode="Extended" SelectionChanged="PersonGroupsList_SelectionChanged" PreviewKeyDown="PersonGroupsList_PreviewKeyDown" AllowDrop="True" PreviewDragOver="PersonGroupsList_PreviewDragOver" Drop="PersonGroupsList_Drop" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
                                  BorderThickness="0,0,1,0" BorderBrush="{StaticResource BorderBrushSoft}"
                                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
                             <ListBox.ContextMenu>
                                 <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
                                     <MenuItem Header="Назвать / переименовать группу" Command="{Binding RenamePersonCommand}"/>
-                                    <MenuItem Header="Объединить эту группу с другой…" Command="{Binding MergePersonGroupCommand}"/>
+                                    <MenuItem Header="{Binding MergePersonActionText}" Command="{Binding MergePersonGroupCommand}"/>
                                     <MenuItem Header="Показать все фото человека в библиотеке" Command="{Binding ShowPersonPhotosCommand}"/>
                                     <Separator/>
-                                    <MenuItem Header="Удалить / расформировать всю группу" Command="{Binding DeletePersonGroupCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
-                                    <MenuItem Header="Игнорировать всю группу…" Command="{Binding IgnorePersonGroupCommand}"/>
-                                    <MenuItem Header="Восстановить последнее игнорирование" Command="{Binding UndoLastFaceIgnoreCommand}"/>
+                                    <MenuItem Header="{Binding DeletePersonActionText}" Command="{Binding DeletePersonGroupCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
+                                    <MenuItem Header="{Binding IgnorePersonActionText}" Command="{Binding IgnorePersonGroupCommand}" ToolTip="Для нескольких выбранных групп действие применяется ко всем сразу; для каждой группы сохраняется своя Undo-запись. Фотографии не изменяются."/>
+                                    <MenuItem Header="Восстановить последнее исключение" Command="{Binding UndoLastFaceIgnoreCommand}"/>
                                 </ContextMenu>
                             </ListBox.ContextMenu>
                             <ListBox.ItemTemplate>
@@ -835,11 +995,11 @@
                                     <MenuItem Header="Это не лицо — игнорировать" Command="{Binding IgnoreFaceCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
                                     <Separator/>
                                     <MenuItem Header="Назвать / переименовать группу" Command="{Binding RenamePersonCommand}"/>
-                                    <MenuItem Header="Объединить эту группу с другой…" Command="{Binding MergePersonGroupCommand}"/>
+                                    <MenuItem Header="{Binding MergePersonActionText}" Command="{Binding MergePersonGroupCommand}"/>
                                     <MenuItem Header="Показать все фото человека в библиотеке" Command="{Binding ShowPersonPhotosCommand}"/>
-                                    <MenuItem Header="Удалить / расформировать всю группу" Command="{Binding DeletePersonGroupCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
-                                    <MenuItem Header="Игнорировать всю группу…" Command="{Binding IgnorePersonGroupCommand}"/>
-                                    <MenuItem Header="Восстановить последнее игнорирование" Command="{Binding UndoLastFaceIgnoreCommand}"/>
+                                    <MenuItem Header="{Binding DeletePersonActionText}" Command="{Binding DeletePersonGroupCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
+                                    <MenuItem Header="{Binding IgnorePersonActionText}" Command="{Binding IgnorePersonGroupCommand}" ToolTip="При множественном выделении действие применяется ко всем выбранным элементам. Фотографии не изменяются."/>
+                                    <MenuItem Header="Восстановить последнее исключение" Command="{Binding UndoLastFaceIgnoreCommand}"/>
                                 </ContextMenu>
                             </ListBox.ContextMenu>
                             <ListBox.ItemTemplate>
@@ -896,11 +1056,11 @@
                                     <TextBlock Text="{Binding SelectedPersonGroup.CoverDisplay}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" Margin="3,0,3,4"/>
                                     <Button Content="Сделать выбранное лицо обложкой" Command="{Binding SetPersonCoverCommand}" ToolTip="Меняет только обложку группы в каталоге PAM"/>
                                     <Button Content="Назвать / переименовать группу" Command="{Binding RenamePersonCommand}" FontWeight="SemiBold"/>
-                                    <Button Content="Объединить эту группу с другой…" Command="{Binding MergePersonGroupCommand}"/>
-                                    <Button Content="Удалить / расформировать всю группу" Command="{Binding DeletePersonGroupCommand}" FontWeight="SemiBold" Foreground="{StaticResource DangerTextBrush}"
-                                            ToolTip="Удаляет только группу из локального каталога PAM. Все лица вернутся в «Без группы»; файлы фотографий не затрагиваются." Style="{StaticResource DangerButtonStyle}"/>
-                                    <Button Content="Игнорировать всю группу…" Command="{Binding IgnorePersonGroupCommand}" ToolTip="Скрывает все лица группы только из каталога PAM. Undo сохраняет прежнюю принадлежность."/>
-                                    <Button Content="Восстановить последнее игнорирование" Command="{Binding UndoLastFaceIgnoreCommand}"/>
+                                    <Button Content="{Binding MergePersonActionText}" Command="{Binding MergePersonGroupCommand}"/>
+                                    <Button Content="{Binding DeletePersonActionText}" Command="{Binding DeletePersonGroupCommand}" FontWeight="SemiBold" Foreground="{StaticResource DangerTextBrush}"
+                                            ToolTip="Расформировывает только группу в каталоге PAM: все лица возвращаются в «Без группы» и снова могут участвовать в группировке. Фотографии не затрагиваются." Style="{StaticResource DangerButtonStyle}"/>
+                                    <Button Content="{Binding IgnorePersonActionText}" Command="{Binding IgnorePersonGroupCommand}" ToolTip="При множественном выделении исключает все выбранные группы; для каждой сохраняется своя Undo-запись. Фотографии не изменяются."/>
+                                    <Button Content="Восстановить последнее исключение" Command="{Binding UndoLastFaceIgnoreCommand}"/>
                                     <TextBlock Text="{Binding FaceIgnoreUndoText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="3,3,3,5"/>
                                     <Separator Margin="0,7,0,5"/>
                                     <Button Content="Назначить выбранное лицо другому человеку…" Command="{Binding AssignFaceToPersonCommand}"/>
@@ -910,7 +1070,7 @@
 
                                     <Border Style="{StaticResource InfoBorderStyle}" Margin="0,12,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}"
-                                                   Text="Все правки лиц хранятся локально в SQLite. Проверяйте автогруппы глазами: фото при переименовании, объединении и игнорировании не изменяются."/>
+                                                   Text="Все правки лиц хранятся локально в SQLite. Проверяйте автогруппы глазами: фото при переименовании, объединении, расформировании и исключении не изменяются."/>
                                     </Border>
                                 </StackPanel>
                             </ScrollViewer>
@@ -928,8 +1088,8 @@
                     </Grid.RowDefinitions>
 
                     <Border Grid.Row="0" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource SeparatorBrush}" BorderThickness="0,0,0,1" Padding="9,7">
-                        <DockPanel LastChildFill="False">
-                            <StackPanel Orientation="Horizontal">
+                        <StackPanel>
+                            <WrapPanel>
                                 <Button Content="Построить события" Command="{Binding AnalyzeEventsCommand}" FontWeight="SemiBold" Style="{StaticResource PrimaryButtonStyle}"/>
                                 <Button Content="Пауза" Command="{Binding PauseEventAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
                                 <Button Content="Продолжить" Command="{Binding ResumeEventAnalysisCommand}" Style="{StaticResource ToolbarButtonStyle}"/>
@@ -941,9 +1101,10 @@
                                 <TextBlock Text="Мин. фото:" VerticalAlignment="Center" Margin="0,0,4,0"/>
                                 <ComboBox Width="58" ItemsSource="{Binding EventMinSizeOptions}" SelectedItem="{Binding SelectedEventMinSize}"/>
                                 <Button Content="Обновить" Command="{Binding RefreshEventsCommand}" Margin="8,3,3,3" Style="{StaticResource ToolbarButtonStyle}"/>
-                            </StackPanel>
-                            <TextBlock DockPanel.Dock="Right" Text="{Binding EventProgressText}" VerticalAlignment="Center" Foreground="{StaticResource SecondaryTextBrush}" TextTrimming="CharacterEllipsis" MaxWidth="300" Margin="12,0,4,0"/>
-                        </DockPanel>
+                            </WrapPanel>
+                            <TextBlock Text="{Binding EventProgressText}" Foreground="{StaticResource SecondaryTextBrush}"
+                                       FontSize="12" TextWrapping="Wrap" Margin="4,4,4,0"/>
+                        </StackPanel>
                     </Border>
 
                     <Border Grid.Row="1" Background="{StaticResource SurfaceSecondaryBrush}" BorderBrush="{StaticResource SeparatorBrush}" BorderThickness="0,0,0,1" Padding="11,7">
@@ -952,15 +1113,7 @@
                             <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap"
                                        Text="Автособытия: доверенная дата + временные разрывы, при наличии GPS и люди. Windows fallback не используется. Ручные правки закрепляют события."/>
                             <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"
-                                       Text="Drag&amp;drop: выделите фото (Ctrl/Shift) и перетащите на событие слева. Меняется только SQLite."/>
-                            <DockPanel LastChildFill="False" Margin="0,7,0,0">
-                                <TextBlock Text="{Binding EventReviewStatusText}" Foreground="{StaticResource SecondaryTextBrush}" VerticalAlignment="Center"/>
-                                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                    <Button Content="‹" Command="{Binding PreviousEventGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Предыдущее событие · Alt+←"/>
-                                    <Button Content="{Binding EventReviewActionText}" Command="{Binding ToggleEventReviewedCommand}" Style="{StaticResource PrimaryButtonStyle}" ToolTip="Переключить отметку «обработано» · Ctrl+Enter"/>
-                                    <Button Content="›" Command="{Binding NextEventGroupCommand}" Style="{StaticResource ToolbarButtonStyle}" ToolTip="Следующее событие · Alt+→"/>
-                                </StackPanel>
-                            </DockPanel>
+                                       Text="Drag&amp;drop: фото можно перетаскивать между событиями, а само событие — на другое событие для объединения. При объединении сохраняется имя события, НА КОТОРОЕ перетащили. Меняется только SQLite."/>
                         </StackPanel>
                     </Border>
 
@@ -975,7 +1128,8 @@
                             <DockPanel>
                                 <TextBlock DockPanel.Dock="Top" Text="Архив по годам" Style="{StaticResource SectionLabelStyle}" Margin="12,10,12,6"/>
                                 <TreeView x:Name="EventGroupsTree" ItemsSource="{Binding EventYears}" BorderThickness="0"
-                                          AllowDrop="True" PreviewDragOver="EventGroupsTree_PreviewDragOver" Drop="EventGroupsTree_Drop"
+                                          AllowDrop="True" PreviewMouseLeftButtonDown="EventGroupsTree_PreviewMouseLeftButtonDown" PreviewMouseMove="EventGroupsTree_PreviewMouseMove"
+                                          PreviewDragOver="EventGroupsTree_PreviewDragOver" Drop="EventGroupsTree_Drop"
                                           PreviewMouseRightButtonDown="EventGroupsTree_PreviewMouseRightButtonDown" ContextMenuOpening="EventGroupsTree_ContextMenuOpening"
                                           SelectedItemChanged="EventGroupsTree_SelectedItemChanged">
                                     <TreeView.ContextMenu>
@@ -1162,10 +1316,6 @@
                                         <StackPanel Grid.Column="1" Margin="7,4">
                                             <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                                             <TextBlock Text="{Binding FullPath}" Foreground="{StaticResource TertiaryTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,5,0,0"/>
-                                            <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                                                <TextBlock Text="{Binding FavoriteDisplay}" Foreground="{StaticResource AccentBrush}" Margin="0,0,6,0"/>
-                                                <TextBlock Text="{Binding RatingStars}" Foreground="{StaticResource AccentBrush}"/>
-                                            </StackPanel>
                                         </StackPanel>
                                         <StackPanel Grid.Column="2" HorizontalAlignment="Right" Margin="4">
                                             <TextBlock Text="{Binding CaptureDateDisplay}" HorizontalAlignment="Right"/>
@@ -1185,7 +1335,6 @@
                                     <TextBlock Text="{Binding SelectedTimelinePhoto.FileName}" Style="{StaticResource InspectorHeaderStyle}" Margin="0,10,0,0"/>
                                     <TextBlock Text="{Binding SelectedTimelinePhoto.CaptureDateDisplay}" Margin="0,5,0,0"/>
                                     <TextBlock Text="{Binding SelectedTimelinePhoto.CameraDisplay}" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,5,0,0" TextWrapping="Wrap"/>
-                                    <TextBlock Text="{Binding SelectedTimelinePhoto.RatingDisplay}" Foreground="{StaticResource AccentBrush}" Margin="0,5,0,0"/>
                                     <TextBlock Text="{Binding SelectedTimelinePhoto.FullPath}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"/>
                                     <Button Content="Открыть просмотрщик" Click="OpenViewer_Click" Style="{StaticResource PrimaryButtonStyle}" Margin="0,12,0,0" ToolTip="Space"/>
                                 </StackPanel>
@@ -1210,10 +1359,15 @@
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="250"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Text="Новый архив:" VerticalAlignment="Center" FontWeight="SemiBold" Margin="3,0,7,0"/>
-                            <TextBox Grid.Column="1" Text="{Binding OrganizationDestinationRoot, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="True" MinWidth="450"/>
-                            <StackPanel Grid.Column="2" Orientation="Horizontal">
+                            <TextBox Grid.Column="1" Text="{Binding OrganizationDestinationRoot, UpdateSourceTrigger=PropertyChanged}" IsReadOnly="True" MinWidth="320"/>
+                            <TextBlock Grid.Column="2" Text="Режим:" VerticalAlignment="Center" FontWeight="SemiBold" Margin="14,0,7,0"/>
+                            <ComboBox Grid.Column="3" ItemsSource="{Binding OrganizationLayoutOptions}" SelectedItem="{Binding SelectedOrganizationLayout}" Margin="0,0,8,0"
+                                      ToolTip="Быстрые режимы раскладывают только по дате и сохраняют исходные имена. Полный режим использует события и может переименовывать файлы."/>
+                            <StackPanel Grid.Column="4" Orientation="Horizontal">
                                 <Button Content="Выбрать папку…" Click="ChooseOrganizationRoot_Click"/>
                                 <Button Content="Построить Preview" Command="{Binding BuildOrganizationPlanCommand}" FontWeight="Bold" Style="{StaticResource PrimaryButtonStyle}"/>
                             </StackPanel>
@@ -1230,13 +1384,15 @@
                                 <WrapPanel>
                                     <CheckBox Content="Разрешить дату файла fallback" IsChecked="{Binding OrganizationUseFallbackDates}" Margin="4,4,16,4"
                                               ToolTip="По умолчанию автоматически выбираются только доверенные даты: EXIF и ручные даты каталога. Включайте fallback только если доверяете файловым датам."/>
-                                    <CheckBox Content="Дата в имени файла" IsChecked="{Binding OrganizationIncludeDateInFileName}" Margin="4,4,16,4"
-                                              ToolTip="Добавляет перед исходным именем только календарную дату: 2016-08-18_IMG_0133.JPG. Время в имя не добавляется."/>
-                                    <CheckBox Content="Имена людей в имени файла" IsChecked="{Binding OrganizationIncludeNamedPeopleInFileName}" Margin="4"
-                                              ToolTip="Добавляет только вручную именованных людей из актуального анализа лиц. Безымянные и автоматические группы в имя не попадают."/>
+                                    <CheckBox Content="Дата в имени файла" IsChecked="{Binding OrganizationIncludeDateInFileName}" IsEnabled="{Binding OrganizationIsFullLayout}" Margin="4,4,16,4"
+                                              ToolTip="Только для полной организации. Добавляет перед исходным именем календарную дату: 2016-08-18_IMG_0133.JPG. Время в имя не добавляется."/>
+                                    <CheckBox Content="Имена людей в имени файла" IsChecked="{Binding OrganizationIncludeNamedPeopleInFileName}" IsEnabled="{Binding OrganizationIsFullLayout}" Margin="4"
+                                              ToolTip="Только для полной организации. Добавляет вручную именованных людей из актуального анализа лиц. Безымянные и автоматические группы в имя не попадают."/>
                                 </WrapPanel>
                                 <TextBlock Margin="4,2,4,4" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap"
-                                           Text="Структура: Год → мес или мес-мес — событие. Файл: дата_исходное имя — именованные люди. Время не добавляется; исходное имя сохраняется."/>
+                                           Text="{Binding OrganizationLayoutDescription}"/>
+                                <TextBlock Margin="4,0,4,4" Foreground="{StaticResource SecondaryTextBrush}" FontSize="11" TextWrapping="Wrap"
+                                           Text="При переносе PAM проверяет SHA-256 уже у конечного файла. EXIF/IPTC/XMP сохраняются побайтово; дата изменения остаётся исходной, дата создания берётся из EXIF даты съёмки, а если её нет — из исходного файла."/>
                                 <TextBlock Text="{Binding OrganizationSummaryText}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="4,3"/>
                                 <TextBlock Text="{Binding OrganizationProgressText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="4,2"/>
                             </StackPanel>
@@ -1296,7 +1452,7 @@
                                     </StackPanel>
                                     <Border Style="{StaticResource WarningBorderStyle}" Margin="0,12,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource WarningTextBrush}"
-                                                   Text="Папки: год → месяц/диапазон месяцев + событие. Имена файлов могут включать дату и только подтверждённых именованных людей. Конфликты не перезаписываются."/>
+                                                   Text="{Binding OrganizationLayoutDescription}"/>
                                     </Border>
                                 </StackPanel>
                             </ScrollViewer>
@@ -1434,7 +1590,7 @@
                         <Border Background="{StaticResource DangerSurfaceBrush}" BorderBrush="{StaticResource DangerBorderBrush}" BorderThickness="1" Padding="14">
                             <StackPanel>
                                 <TextBlock Text="Опасные действия" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource DangerTextBrush}"/>
-                                <TextBlock Text="По умолчанию используется обратимый карантин. Окончательное удаление выключено." TextWrapping="Wrap" Margin="0,7,0,12"/>
+                                <TextBlock Text="По умолчанию используется обратимый карантин. Отдельный прямой режим существует только для подтверждённых точных дублей и включается на их вкладке; здесь управляется окончательная очистка уже помещённых в карантин файлов." TextWrapping="Wrap" Margin="0,7,0,12"/>
                                 <CheckBox Content="Разрешить окончательное удаление файлов ИЗ КАРАНТИНА в этой сессии"
                                           IsChecked="{Binding AllowPermanentDelete}" FontWeight="SemiBold"/>
                                 <TextBlock Text="Разрешение не сохраняется между запусками. Перед удалением — два подтверждения и повторная проверка SHA-256." Foreground="{StaticResource DangerTextBrush}" TextWrapping="Wrap" Margin="0,9,0,0"/>
@@ -1444,7 +1600,7 @@
                         <Border Background="{StaticResource SuccessSurfaceBrush}" BorderBrush="{StaticResource SuccessBorderBrush}" BorderThickness="1" Padding="14" Margin="0,16,0,0">
                             <StackPanel>
                                 <TextBlock Text="Что остаётся защищённым" FontSize="16" FontWeight="SemiBold"/>
-                                <TextBlock Text="• Анализ не удаляет оригиналы.\n• Удаление возможно только из карантина.\n• Организация всегда начинается с Preview и проверки SHA-256.\n• Карантин и Undo остаются основным безопасным workflow." TextWrapping="Wrap" Margin="0,8,0,0" LineHeight="22"/>
+                                <TextBlock Text="• Анализ не удаляет оригиналы.\n• По умолчанию любые exact-дубли идут в карантин; прямое удаление включается отдельно и только вручную.\n• Организация всегда начинается с Preview и финальной проверки SHA-256; встроенные метаданные сохраняются побайтово, файловые даты контролируются после переноса.\n• Карантин и Undo остаются основным безопасным workflow." TextWrapping="Wrap" Margin="0,8,0,0" LineHeight="22"/>
                             </StackPanel>
                         </Border>
 
@@ -1461,7 +1617,7 @@
                             <StackPanel>
                                 <TextBlock Text="О программе" FontSize="16" FontWeight="SemiBold"/>
                                 <TextBlock Text="Photo Archive Manager" FontSize="17" FontWeight="SemiBold" Margin="0,8,0,0"/>
-                                <TextBlock Text="Версия: 1.7.1" Margin="0,6,0,0"/>
+                                <TextBlock Text="Версия: 1.15.3" Margin="0,6,0,0"/>
                                 <TextBlock Text="Разработчик: Привалов Олег" Margin="0,4,0,0"/>
                                 <TextBlock Text="Дата создания проекта: 01.09.2026" Margin="0,4,0,0"/>
                             </StackPanel>

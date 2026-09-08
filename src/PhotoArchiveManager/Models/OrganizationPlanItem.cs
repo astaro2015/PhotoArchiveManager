@@ -1,4 +1,4 @@
-using PhotoArchiveManager.Infrastructure;
+﻿using PhotoArchiveManager.Infrastructure;
 
 namespace PhotoArchiveManager.Models;
 
@@ -15,6 +15,9 @@ public sealed class OrganizationPlanItem : ObservableObject
     public long FileSize { get; init; }
     public long LastWriteUtcTicks { get; init; }
     public string CaptureDateSource { get; init; } = "";
+    // Embedded EXIF capture date (timezone-less local camera time). When present, Organization
+    // uses it for the destination file CreationTime; LastWriteTime is always preserved from source.
+    public DateTime? EmbeddedCaptureDate { get; init; }
     public string DateDisplay { get; init; } = "";
     public string EventDisplay { get; init; } = "";
     public string Status { get; init; } = "";
