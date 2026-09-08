@@ -494,6 +494,7 @@ public sealed class MainViewModel : ObservableObject
     private bool CanDeleteCurrentPersonSelection() => GetSelectedPersonGroups().Any(x => x.Id > 0);
     private bool CanIgnoreCurrentPersonSelection() => GetSelectedPersonGroups().Any(x => x.FaceCount > 0);
 
+    private readonly HashSet<long> _selectedPersonFaceIds = new();
     private FaceItem? _selectedPersonFace;
     public FaceItem? SelectedPersonFace
     {
@@ -501,8 +502,49 @@ public sealed class MainViewModel : ObservableObject
         set
         {
             if (SetProperty(ref _selectedPersonFace, value))
+            {
+                NotifyPersonFaceSelectionChanged();
                 RaisePeopleCommands();
+            }
         }
+    }
+
+    public void UpdateSelectedPersonFaces(IEnumerable<FaceItem> faces)
+    {
+        _selectedPersonFaceIds.Clear();
+        foreach (var face in faces)
+        {
+            if (face.FaceId > 0)
+                _selectedPersonFaceIds.Add(face.FaceId);
+        }
+        NotifyPersonFaceSelectionChanged();
+        RaisePeopleCommands();
+    }
+
+    private List<FaceItem> GetSelectedPersonFaces()
+    {
+        var selected = PersonFaces.Where(x => _selectedPersonFaceIds.Contains(x.FaceId)).ToList();
+        if (selected.Count == 0 && SelectedPersonFace is { FaceId: > 0 })
+            selected.Add(SelectedPersonFace);
+        return selected;
+    }
+
+    private int SelectedPersonFaceCount => GetSelectedPersonFaces().Count;
+    public string AssignFaceActionText => SelectedPersonFaceCount >= 2
+        ? $"Назначить выбранные лица ({SelectedPersonFaceCount:N0}) другому человеку…"
+        : "Назначить выбранное лицо другому человеку…";
+    public string RemoveFaceActionText => SelectedPersonFaceCount >= 2
+        ? $"Убрать выбранные лица ({SelectedPersonFaceCount:N0}) из группы"
+        : "Убрать это лицо из группы";
+    public string IgnoreFaceActionText => SelectedPersonFaceCount >= 2
+        ? $"Исключить выбранные лица ({SelectedPersonFaceCount:N0})"
+        : "Это не лицо — игнорировать";
+
+    private void NotifyPersonFaceSelectionChanged()
+    {
+        OnPropertyChanged(nameof(AssignFaceActionText));
+        OnPropertyChanged(nameof(RemoveFaceActionText));
+        OnPropertyChanged(nameof(IgnoreFaceActionText));
     }
 
     private EventGroupItem? _selectedEventGroup;
@@ -1227,10 +1269,10 @@ public sealed class MainViewModel : ObservableObject
         StopQualityAnalysisCommand = new RelayCommand(() => _qualityAnalyzer.Stop(), () => IsQualityAnalysisRunning);
         ClearVisualReviewCommand = new RelayCommand(ClearVisualReview,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
-                  SelectedVisualDuplicateGroup is not null);
+                  VisualDuplicateGroups.Count > 0);
         QuarantineMarkedVisualCommand = new AsyncRelayCommand(QuarantineMarkedVisualAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
-                  SelectedVisualDuplicateGroup is not null);
+                  VisualDuplicateGroups.Count > 0);
 
         FindBurstsCommand = new AsyncRelayCommand(FindBurstsAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning);
@@ -1263,10 +1305,10 @@ public sealed class MainViewModel : ObservableObject
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
                   SelectedBurstGroup is not null && SelectedBurstFile is not null);
         ClearBurstReviewCommand = new RelayCommand(ClearBurstReview,
-            () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedBurstGroup is not null);
+            () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && BurstGroups.Count > 0);
         QuarantineMarkedBurstCommand = new AsyncRelayCommand(QuarantineMarkedBurstAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning &&
-                  SelectedBurstGroup is not null);
+                  BurstGroups.Count > 0);
 
         AnalyzePeopleCommand = new AsyncRelayCommand(AnalyzePeopleAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning);
@@ -1290,15 +1332,16 @@ public sealed class MainViewModel : ObservableObject
         RenamePersonCommand = new AsyncRelayCommand(RenameSelectedPersonAsync,
             () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && HasSingleSelectedRealPersonGroup());
         AssignFaceToPersonCommand = new AsyncRelayCommand(AssignSelectedFaceToPersonAsync,
-            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonFace is not null && PersonGroups.Any(x => x.Id > 0 && x.Id != SelectedPersonFace.PersonId));
+            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && GetSelectedPersonFaces().Count > 0 &&
+                  PersonGroups.Any(group => group.Id > 0 && GetSelectedPersonFaces().Any(face => face.PersonId != group.Id)));
         MergePersonGroupCommand = new AsyncRelayCommand(MergeSelectedPersonGroupAsync,
             () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && CanMergeCurrentPersonSelection());
         DeletePersonGroupCommand = new AsyncRelayCommand(DeleteSelectedPersonGroupAsync,
             () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && CanDeleteCurrentPersonSelection());
         RemoveFaceFromPersonCommand = new AsyncRelayCommand(RemoveSelectedFaceFromPersonAsync,
-            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonFace?.PersonId is not null);
+            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && GetSelectedPersonFaces().Any(x => x.PersonId is not null));
         IgnoreFaceCommand = new AsyncRelayCommand(IgnoreSelectedFaceAsync,
-            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && SelectedPersonFace is not null);
+            () => !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning && GetSelectedPersonFaces().Count > 0);
         IgnorePersonGroupCommand = new AsyncRelayCommand(IgnoreSelectedPersonGroupAsync,
             () => CanPerformCatalogReview && CanIgnoreCurrentPersonSelection());
         UndoLastFaceIgnoreCommand = new AsyncRelayCommand(UndoLastFaceIgnoreAsync,
@@ -1310,7 +1353,8 @@ public sealed class MainViewModel : ObservableObject
         OpenPersonPhotoCommand = new RelayCommand(OpenPersonPhoto,
             () => SelectedPersonFace is not null && File.Exists(SelectedPersonFace.FullPath));
         SetPersonCoverCommand = new AsyncRelayCommand(SetSelectedPersonCoverAsync,
-            () => CanPerformCatalogReview && HasSingleSelectedRealPersonGroup() && SelectedPersonGroup is { Id: > 0 } && SelectedPersonFace?.PersonId == SelectedPersonGroup.Id);
+            () => CanPerformCatalogReview && HasSingleSelectedRealPersonGroup() && GetSelectedPersonFaces().Count == 1 &&
+                  SelectedPersonGroup is { Id: > 0 } && GetSelectedPersonFaces()[0].PersonId == SelectedPersonGroup.Id);
 
         AnalyzeEventsCommand = new AsyncRelayCommand(AnalyzeEventsAsync,
             () => !IsScanning && !IsDuplicateAnalysisRunning && !IsVisualAnalysisRunning && !IsQualityAnalysisRunning && !IsBurstAnalysisRunning && !IsPeopleAnalysisRunning && !IsEventAnalysisRunning && !IsFileOperationRunning);
@@ -1726,78 +1770,146 @@ public sealed class MainViewModel : ObservableObject
 
     private void ClearVisualReview()
     {
-        var group = SelectedVisualDuplicateGroup;
-        if (group is null) return;
-        foreach (var file in group.Files)
+        var cleared = 0;
+        foreach (var file in VisualDuplicateGroups.SelectMany(x => x.Files))
+        {
+            if (!file.IsMarkedForQuarantine) continue;
             file.IsMarkedForQuarantine = false;
-        StatusText = "Отметки «в карантин» текущей визуальной группы очищены.";
+            cleared++;
+        }
+
+        StatusText = cleared == 0
+            ? "Во всех визуальных группах уже нет отметок «в карантин»."
+            : $"Сняты все отметки «в карантин» во всех визуальных группах: {cleared:N0}.";
         RaiseVisualCommands();
     }
 
     private async Task QuarantineMarkedVisualAsync()
     {
-        var group = SelectedVisualDuplicateGroup;
-        if (group is null) return;
+        var batches = VisualDuplicateGroups
+            .Select(group => new
+            {
+                Group = group,
+                Marked = group.Files.Where(x => x.IsMarkedForQuarantine).ToList(),
+                Keepers = group.Files.Where(x => !x.IsMarkedForQuarantine).ToList()
+            })
+            .Where(x => x.Marked.Count > 0)
+            .ToList();
 
-        var marked = group.Files.Where(x => x.IsMarkedForQuarantine).ToList();
-        if (marked.Count == 0)
+        if (batches.Count == 0)
         {
-            MessageBox.Show("Отметьте галочками конкретные файлы, которые хотите отправить в карантин.", "Ничего не отмечено", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Во всех визуальных группах нет файлов, отмеченных галочкой «в карантин».", "Ничего не отмечено", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var keepers = group.Files.Where(x => !x.IsMarkedForQuarantine).ToList();
-        if (keepers.Count == 0)
+        var invalid = batches.Where(x => x.Keepers.Count == 0).ToList();
+        if (invalid.Count > 0)
         {
-            MessageBox.Show("Нельзя отправить в карантин всю группу. Снимите галочку «в карантин» хотя бы с одного файла — неотмеченные файлы остаются на месте.", "Нужно оставить хотя бы один файл", MessageBoxButton.OK, MessageBoxImage.Information);
+            var examples = string.Join("\n", invalid.Take(6).Select((x, i) => $"{i + 1}. {x.Group.HeaderText}"));
+            if (invalid.Count > 6) examples += $"\n…и ещё {invalid.Count - 6:N0}.";
+            MessageBox.Show(
+                $"В {invalid.Count:N0} визуальной группе(ах) отмечены в карантин все файлы. " +
+                "До выполнения нужно оставить хотя бы один неотмеченный файл в каждой такой группе.\n\n" + examples,
+                "Нужно оставить хотя бы один файл в каждой группе",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 
-        var bytes = marked.Sum(x => x.FileSize);
-        var minSimilarity = marked.Min(x => x.SimilarityPercent);
+        var duplicateMarkedIds = batches
+            .SelectMany(x => x.Marked.Select(file => file.Id))
+            .GroupBy(id => id)
+            .Where(x => x.Count() > 1)
+            .Select(x => x.Key)
+            .Take(8)
+            .ToList();
+        if (duplicateMarkedIds.Count > 0)
+        {
+            var message = "Один и тот же файл оказался отмечен сразу в нескольких визуальных группах. " +
+                          "Это внутренняя несогласованность анализа; физические операции отменены. " +
+                          "Обновите визуальный анализ перед повторной попыткой.\n\nID: " +
+                          string.Join(", ", duplicateMarkedIds);
+            MessageBox.Show(message, "Несогласованные визуальные группы", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var markedCount = batches.Sum(x => x.Marked.Count);
+        var keeperCount = batches.Sum(x => x.Keepers.Count);
+        var bytes = batches.Sum(x => x.Marked.Sum(file => file.FileSize));
+        var minSimilarity = batches.Min(x => x.Marked.Min(file => file.SimilarityPercent));
         var answer = MessageBox.Show(
-            $"Останется на месте: {keepers.Count:N0} файл(ов).\n" +
-            $"В карантин будет перемещено: {marked.Count:N0} файлов ({ByteFormatter.Format(bytes)}).\n" +
-            $"Минимальное сходство с представителем группы: {minSimilarity:0.0}%.\n\n" +
+            $"Групп с отметками: {batches.Count:N0}.\n" +
+            $"В этих группах останется на месте: {keeperCount:N0} файл(ов).\n" +
+            $"В карантин будет перемещено ВСЕГО: {markedCount:N0} файлов ({ByteFormatter.Format(bytes)}).\n" +
+            $"Минимальное сходство среди отмеченных: {minSimilarity:0.0}%.\n\n" +
             "ВАЖНО: это визуально похожие кадры, а НЕ доказанные SHA-256 дубли. " +
-            "PAM переместит только отмеченные галочкой «в карантин» файлы; все неотмеченные останутся. Карантин обратим через Undo.\n\nПродолжить?",
-            "Подтвердить карантин визуальных копий",
+            "PAM обработает все галочки «в карантин» во всех визуальных группах этой вкладки; все неотмеченные файлы останутся. " +
+            "Перед началом уже проверено, что в каждой затронутой группе остаётся хотя бы один файл. Карантин обратим через Undo.\n\nПродолжить?",
+            "Итоговое превью карантина визуальных копий",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
 
         IsFileOperationRunning = true;
+        var result = new QuarantineBatchResult { Requested = markedCount };
         try
         {
-            StatusText = "Проверка файлов и перенос отмеченных визуальных копий в карантин…";
-            var result = await _quarantineService.QuarantineSelectedVisualAsync(group, marked);
+            for (var index = 0; index < batches.Count; index++)
+            {
+                var batch = batches[index];
+                StatusText = $"Визуальные копии: группа {index + 1:N0}/{batches.Count:N0} · проверка и перенос {batch.Marked.Count:N0} отмеченных…";
+                try
+                {
+                    var groupResult = await _quarantineService.QuarantineSelectedVisualAsync(batch.Group, batch.Marked);
+                    result.Succeeded += groupResult.Succeeded;
+                    result.BytesMoved += groupResult.BytesMoved;
+                    foreach (var error in groupResult.Errors)
+                        result.Errors.Add($"{batch.Group.HeaderText}: {error}");
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.Error($"Visual quarantine group failed: {batch.Group.GroupKey}", ex);
+                    foreach (var file in batch.Marked)
+                        result.Errors.Add($"{file.FullPath}: группа не обработана: {ex.Message}");
+                }
+            }
+
             StatusText = result.Failed == 0
-                ? $"В карантин перемещено {result.Succeeded:N0} отмеченных файлов ({ByteFormatter.Format(result.BytesMoved)})."
-                : $"Ручной карантин: успешно {result.Succeeded:N0}, ошибок {result.Failed:N0}.";
+                ? $"В карантин перемещены все отмеченные визуальные копии: {result.Succeeded:N0} файлов из {batches.Count:N0} групп ({ByteFormatter.Format(result.BytesMoved)})."
+                : $"Карантин визуальных копий: успешно {result.Succeeded:N0} из {result.Requested:N0}, ошибок {result.Failed:N0}.";
 
             if (result.Failed > 0)
             {
                 var details = string.Join("\n", result.Errors.Take(8));
                 if (result.Errors.Count > 8) details += $"\n…и ещё {result.Errors.Count - 8:N0}. Подробности есть в журнале.";
-                MessageBox.Show(details, "Не все файлы удалось переместить", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(details, "Не все отмеченные файлы удалось переместить", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
         catch (Exception ex)
         {
             LoggingService.Error("Visual quarantine batch failed", ex);
-            StatusText = "Ошибка ручного карантина: " + ex.Message;
-            MessageBox.Show(ex.Message, "Ошибка ручного карантина", MessageBoxButton.OK, MessageBoxImage.Error);
+            StatusText = "Ошибка общего карантина визуальных копий: " + ex.Message;
+            MessageBox.Show(ex.Message, "Ошибка карантина визуальных копий", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
             IsFileOperationRunning = false;
+            var marksToRestore = VisualDuplicateGroups
+                .SelectMany(x => x.Files)
+                .Where(x => x.IsMarkedForQuarantine)
+                .Select(x => x.Id)
+                .ToHashSet();
+            var preferredGroupKey = SelectedVisualDuplicateGroup?.GroupKey;
+            var preferredFileId = SelectedVisualDuplicateFile?.Id;
+            if (result.Succeeded > 0)
+                ClearVisualGroupsAfterLibraryChange();
             await LoadDuplicateGroupsAsync();
             await LoadQuarantineAsync();
             await LoadPhotosAsync(reset: true);
             await LoadStatisticsAsync();
             await LoadEventsAsync();
-            await LoadVisualDuplicateGroupsAsync();
+            await ReloadVisualDuplicateGroupsAsync(marksToRestore, preferredGroupKey, preferredFileId);
         }
     }
 
@@ -1838,13 +1950,18 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private async Task LoadBurstGroupsAsync()
+    private Task LoadBurstGroupsAsync() => ReloadBurstGroupsAsync();
+
+    private async Task ReloadBurstGroupsAsync(
+        IReadOnlyCollection<long>? quarantineMarks = null,
+        string? preferredGroupKey = null,
+        long? preferredFileId = null)
     {
         try
         {
             StatusText = "Группировка серий из уже рассчитанных отпечатков…";
             var groups = await _burstAnalyzer.LoadCachedGroupsAsync(SelectedBurstMaxGap, SelectedBurstMinSize, SelectedBurstKeepCount);
-            ApplyBurstGroups(groups);
+            ApplyBurstGroups(groups, preferredGroupKey, preferredFileId, quarantineMarks);
             StatusText = $"Серии обновлены из кэша. Найдено: {groups.Count:N0}.";
         }
         catch (Exception ex)
@@ -1930,107 +2047,171 @@ public sealed class MainViewModel : ObservableObject
 
     private void ClearBurstReview()
     {
-        var group = SelectedBurstGroup;
-        if (group is null) return;
-        foreach (var file in group.Files)
+        var cleared = 0;
+        foreach (var file in BurstGroups.SelectMany(x => x.Files))
+        {
+            if (!file.IsMarkedForQuarantine) continue;
             file.IsMarkedForQuarantine = false;
-        StatusText = "Отметки «в карантин» выбранной серии очищены. Рекомендационные звёздочки оставлены как подсказка.";
+            cleared++;
+        }
+
+        StatusText = cleared == 0
+            ? "Во всех сериях уже нет отметок «в карантин»."
+            : $"Сняты все отметки «в карантин» во всех сериях: {cleared:N0}. Рекомендационные звёздочки оставлены как подсказка.";
         RaiseBurstCommands();
     }
 
     private async Task QuarantineMarkedBurstAsync()
     {
-        var group = SelectedBurstGroup;
-        if (group is null) return;
+        var batches = BurstGroups
+            .Select(group => new
+            {
+                Group = group,
+                Marked = group.Files.Where(x => x.IsMarkedForQuarantine).ToList(),
+                Keepers = group.Files.Where(x => !x.IsMarkedForQuarantine).ToList()
+            })
+            .Where(x => x.Marked.Count > 0)
+            .ToList();
 
-        var marked = group.Files.Where(x => x.IsMarkedForQuarantine).ToList();
-        if (marked.Count == 0)
+        if (batches.Count == 0)
         {
-            MessageBox.Show("Не отмечено ни одного кадра для карантина.", "Ничего не отмечено", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Во всех сериях нет кадров, отмеченных галочкой «в карантин».", "Ничего не отмечено", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var keepers = group.Files.Where(x => !x.IsMarkedForQuarantine).ToList();
-        if (keepers.Count == 0)
+        var invalid = batches.Where(x => x.Keepers.Count == 0).ToList();
+        if (invalid.Count > 0)
         {
-            MessageBox.Show("Нельзя отправить в карантин всю серию. Снимите галочку «в карантин» хотя бы с одного кадра — все неотмеченные кадры остаются на месте.", "Нужно оставить хотя бы один кадр", MessageBoxButton.OK, MessageBoxImage.Information);
+            var examples = string.Join("\n", invalid.Take(6).Select((x, i) => $"{i + 1}. {x.Group.HeaderText}"));
+            if (invalid.Count > 6) examples += $"\n…и ещё {invalid.Count - 6:N0}.";
+            MessageBox.Show(
+                $"В {invalid.Count:N0} серии(ях) отмечены в карантин все кадры. " +
+                "До выполнения нужно оставить хотя бы один неотмеченный кадр в каждой такой серии.\n\n" + examples,
+                "Нужно оставить хотя бы один кадр в каждой серии",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
             return;
         }
 
-        var bytes = marked.Sum(x => x.FileSize);
+        var duplicateMarkedIds = batches
+            .SelectMany(x => x.Marked.Select(file => file.Id))
+            .GroupBy(id => id)
+            .Where(x => x.Count() > 1)
+            .Select(x => x.Key)
+            .Take(8)
+            .ToList();
+        if (duplicateMarkedIds.Count > 0)
+        {
+            var message = "Один и тот же кадр оказался отмечен сразу в нескольких сериях. " +
+                          "Это внутренняя несогласованность анализа; физические операции отменены. " +
+                          "Пересоберите серии перед повторной попыткой.\n\nID: " +
+                          string.Join(", ", duplicateMarkedIds);
+            MessageBox.Show(message, "Несогласованные серии", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        var markedCount = batches.Sum(x => x.Marked.Count);
+        var keeperCount = batches.Sum(x => x.Keepers.Count);
+        var bytes = batches.Sum(x => x.Marked.Sum(file => file.FileSize));
         var answer = MessageBox.Show(
-            $"Серия: {group.HeaderText}\n\n" +
-            $"Останется на месте: {keepers.Count:N0} кадр(ов).\n" +
-            $"В карантин переместятся отмеченные: {marked.Count:N0} ({ByteFormatter.Format(bytes)}).\n\n" +
-            "ВАЖНО: кадры серии НЕ являются дублями. Рекомендация основана на времени, визуальной близости и техническом Quality Score. " +
-            "PAM переместит только отмеченные галочкой «в карантин» кадры; все неотмеченные останутся. Карантин полностью обратим через Undo.\n\nПродолжить?",
-            "Подтвердить карантин кадров серии",
+            $"Серий с отметками: {batches.Count:N0}.\n" +
+            $"В этих сериях останется на месте: {keeperCount:N0} кадр(ов).\n" +
+            $"В карантин будет перемещено ВСЕГО: {markedCount:N0} кадров ({ByteFormatter.Format(bytes)}).\n\n" +
+            "ВАЖНО: кадры серий НЕ являются дублями. Рекомендации основаны на времени, визуальной близости и техническом Quality Score. " +
+            "PAM обработает все галочки «в карантин» во всех сериях этой вкладки; все неотмеченные кадры останутся. " +
+            "Перед началом уже проверено, что в каждой затронутой серии остаётся хотя бы один кадр. Карантин полностью обратим через Undo.\n\nПродолжить?",
+            "Итоговое превью карантина серий",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning,
             MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
 
         IsFileOperationRunning = true;
+        var result = new QuarantineBatchResult { Requested = markedCount };
         try
         {
-            StatusText = "Проверка и перенос отмеченных кадров серии в карантин…";
-            var result = await _quarantineService.QuarantineSelectedBurstAsync(group, marked);
+            for (var index = 0; index < batches.Count; index++)
+            {
+                var batch = batches[index];
+                StatusText = $"Серии: {index + 1:N0}/{batches.Count:N0} · проверка и перенос {batch.Marked.Count:N0} отмеченных кадров…";
+                try
+                {
+                    var groupResult = await _quarantineService.QuarantineSelectedBurstAsync(batch.Group, batch.Marked);
+                    result.Succeeded += groupResult.Succeeded;
+                    result.BytesMoved += groupResult.BytesMoved;
+                    foreach (var error in groupResult.Errors)
+                        result.Errors.Add($"{batch.Group.HeaderText}: {error}");
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.Error($"Burst quarantine group failed: {batch.Group.GroupKey}", ex);
+                    foreach (var file in batch.Marked)
+                        result.Errors.Add($"{file.FullPath}: серия не обработана: {ex.Message}");
+                }
+            }
+
             StatusText = result.Failed == 0
-                ? $"В карантин перемещено {result.Succeeded:N0} кадров серии ({ByteFormatter.Format(result.BytesMoved)})."
-                : $"Карантин серии: успешно {result.Succeeded:N0}, ошибок {result.Failed:N0}.";
+                ? $"В карантин перемещены все отмеченные кадры: {result.Succeeded:N0} из {batches.Count:N0} серий ({ByteFormatter.Format(result.BytesMoved)})."
+                : $"Карантин серий: успешно {result.Succeeded:N0} из {result.Requested:N0}, ошибок {result.Failed:N0}.";
 
             if (result.Failed > 0)
             {
                 var details = string.Join("\n", result.Errors.Take(8));
                 if (result.Errors.Count > 8) details += $"\n…и ещё {result.Errors.Count - 8:N0}. Подробности есть в журнале.";
-                MessageBox.Show(details, "Не все кадры удалось переместить", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(details, "Не все отмеченные кадры удалось переместить", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
         catch (Exception ex)
         {
             LoggingService.Error("Burst quarantine batch failed", ex);
-            StatusText = "Ошибка карантина серии: " + ex.Message;
-            MessageBox.Show(ex.Message, "Ошибка карантина серии", MessageBoxButton.OK, MessageBoxImage.Error);
+            StatusText = "Ошибка общего карантина серий: " + ex.Message;
+            MessageBox.Show(ex.Message, "Ошибка карантина серий", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
             IsFileOperationRunning = false;
-            ClearVisualGroupsAfterLibraryChange();
+            var marksToRestore = BurstGroups
+                .SelectMany(x => x.Files)
+                .Where(x => x.IsMarkedForQuarantine)
+                .Select(x => x.Id)
+                .ToHashSet();
+            var preferredGroupKey = SelectedBurstGroup?.GroupKey;
+            var preferredFileId = SelectedBurstFile?.Id;
+            if (result.Succeeded > 0)
+                ClearVisualGroupsAfterLibraryChange();
             await LoadDuplicateGroupsAsync();
             await LoadQuarantineAsync();
             await LoadPhotosAsync(reset: true);
             await LoadStatisticsAsync();
             await LoadEventsAsync();
-            await LoadBurstGroupsAsync();
+            await ReloadBurstGroupsAsync(marksToRestore, preferredGroupKey, preferredFileId);
         }
     }
 
-    private void ApplyBurstGroups(IReadOnlyList<BurstGroupItem> groups, string? preferredGroupKey = null, long? preferredFileId = null)
+    private void ApplyBurstGroups(
+        IReadOnlyList<BurstGroupItem> groups,
+        string? preferredGroupKey = null,
+        long? preferredFileId = null,
+        IReadOnlyCollection<long>? quarantineMarks = null)
     {
         var previous = SelectedBurstGroup;
         var oldKey = preferredGroupKey ?? previous?.GroupKey;
         var oldFileId = preferredFileId ?? SelectedBurstFile?.Id;
-        var quarantineState = previous is not null && previous.GroupKey == oldKey
-            ? previous.Files.ToDictionary(x => x.Id, x => x.IsMarkedForQuarantine)
-            : new Dictionary<long, bool>();
+        var markedFileIds = quarantineMarks is null
+            ? BurstGroups.SelectMany(x => x.Files).Where(x => x.IsMarkedForQuarantine).Select(x => x.Id).ToHashSet()
+            : quarantineMarks.ToHashSet();
 
         BurstGroups.Clear();
         foreach (var group in groups)
         {
             group.ApplyRecommendations(SelectedBurstKeepCount);
+            foreach (var file in group.Files)
+                file.IsMarkedForQuarantine = markedFileIds.Contains(file.Id);
             BurstGroups.Add(group);
         }
 
         SelectedBurstGroup = BurstGroups.FirstOrDefault(x => x.GroupKey == oldKey) ?? BurstGroups.FirstOrDefault();
-        if (SelectedBurstGroup is not null)
-        {
-            foreach (var file in SelectedBurstGroup.Files)
-            {
-                if (quarantineState.TryGetValue(file.Id, out var isMarkedForQuarantine))
-                    file.IsMarkedForQuarantine = isMarkedForQuarantine;
-            }
-            SelectedBurstGroup.NotifySummaryChanged();
-        }
+        SelectedBurstGroup?.NotifySummaryChanged();
         if (SelectedBurstGroup is not null && oldFileId.HasValue)
             SelectedBurstFile = SelectedBurstGroup.Files.FirstOrDefault(x => x.Id == oldFileId.Value) ?? SelectedBurstGroup.Files.FirstOrDefault();
 
@@ -2042,13 +2223,18 @@ public sealed class MainViewModel : ObservableObject
         RaiseBurstCommands();
     }
 
-    private async Task LoadVisualDuplicateGroupsAsync()
+    private Task LoadVisualDuplicateGroupsAsync() => ReloadVisualDuplicateGroupsAsync();
+
+    private async Task ReloadVisualDuplicateGroupsAsync(
+        IReadOnlyCollection<long>? quarantineMarks = null,
+        string? preferredGroupKey = null,
+        long? preferredFileId = null)
     {
         try
         {
             StatusText = "Группировка уже рассчитанных визуальных отпечатков…";
             var groups = await _perceptualAnalyzer.LoadCachedGroupsAsync(SelectedVisualThreshold);
-            ApplyVisualGroups(groups);
+            ApplyVisualGroups(groups, preferredGroupKey, preferredFileId, quarantineMarks);
             StatusText = $"Визуальные группы обновлены. Групп: {groups.Count:N0}.";
         }
         catch (Exception ex)
@@ -2058,26 +2244,27 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
-    private void ApplyVisualGroups(IReadOnlyList<VisualDuplicateGroupItem> groups, string? preferredGroupKey = null, long? preferredFileId = null)
+    private void ApplyVisualGroups(
+        IReadOnlyList<VisualDuplicateGroupItem> groups,
+        string? preferredGroupKey = null,
+        long? preferredFileId = null,
+        IReadOnlyCollection<long>? quarantineMarks = null)
     {
         var previousGroup = SelectedVisualDuplicateGroup;
         var oldKey = preferredGroupKey ?? previousGroup?.GroupKey;
         var oldFileId = preferredFileId ?? SelectedVisualDuplicateFile?.Id;
-        var quarantineState = previousGroup is not null && previousGroup.GroupKey == oldKey
-            ? previousGroup.Files.ToDictionary(x => x.Id, x => x.IsMarkedForQuarantine)
-            : new Dictionary<long, bool>();
+        var markedFileIds = quarantineMarks is null
+            ? VisualDuplicateGroups.SelectMany(x => x.Files).Where(x => x.IsMarkedForQuarantine).Select(x => x.Id).ToHashSet()
+            : quarantineMarks.ToHashSet();
 
         VisualDuplicateGroups.Clear();
-        foreach (var group in groups) VisualDuplicateGroups.Add(group);
-        SelectedVisualDuplicateGroup = VisualDuplicateGroups.FirstOrDefault(x => x.GroupKey == oldKey) ?? VisualDuplicateGroups.FirstOrDefault();
-        if (SelectedVisualDuplicateGroup is not null)
+        foreach (var group in groups)
         {
-            foreach (var file in SelectedVisualDuplicateGroup.Files)
-            {
-                if (quarantineState.TryGetValue(file.Id, out var isMarkedForQuarantine))
-                    file.IsMarkedForQuarantine = isMarkedForQuarantine;
-            }
+            foreach (var file in group.Files)
+                file.IsMarkedForQuarantine = markedFileIds.Contains(file.Id);
+            VisualDuplicateGroups.Add(group);
         }
+        SelectedVisualDuplicateGroup = VisualDuplicateGroups.FirstOrDefault(x => x.GroupKey == oldKey) ?? VisualDuplicateGroups.FirstOrDefault();
         if (SelectedVisualDuplicateGroup is not null && oldFileId.HasValue)
             SelectedVisualDuplicateFile = SelectedVisualDuplicateGroup.Files.FirstOrDefault(x => x.Id == oldFileId.Value) ?? SelectedVisualDuplicateGroup.Files.FirstOrDefault();
 
@@ -2170,7 +2357,9 @@ public sealed class MainViewModel : ObservableObject
     {
         var group = SelectedPersonGroup;
         PersonFaces.Clear();
+        _selectedPersonFaceIds.Clear();
         SelectedPersonFace = null;
+        NotifyPersonFaceSelectionChanged();
         if (group is null) return;
 
         try
@@ -2214,7 +2403,8 @@ public sealed class MainViewModel : ObservableObject
     private async Task SetSelectedPersonCoverAsync()
     {
         var group = SelectedPersonGroup;
-        var face = SelectedPersonFace;
+        var faces = GetSelectedPersonFaces();
+        var face = faces.Count == 1 ? faces[0] : null;
         if (group is null || group.Id <= 0 || face is null || face.PersonId != group.Id) return;
         await _database.SetPersonRepresentativeFaceAsync(group.Id, face.FaceId);
         StatusText = $"Обложка «{group.DisplayName}» изменена. Файлы не изменялись.";
@@ -2223,41 +2413,86 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public async Task AssignFaceToPersonAsync(FaceItem face, long targetPersonId)
+        => await AssignFacesToPersonAsync([face], targetPersonId);
+
+    public async Task AssignFacesToPersonAsync(IReadOnlyCollection<FaceItem> faces, long targetPersonId)
     {
         if (!CanPerformCatalogReview) throw new InvalidOperationException("Дождитесь окончания текущего анализа или файловой операции.");
-        if (face is null || targetPersonId <= 0) throw new ArgumentException("Некорректная группа лиц.");
-        if (face.PersonId == targetPersonId) return;
+        var selected = faces?.Where(x => x is { FaceId: > 0 }).GroupBy(x => x.FaceId).Select(x => x.First()).ToArray() ?? [];
+        if (selected.Length == 0 || targetPersonId <= 0) throw new ArgumentException("Некорректный набор лиц или целевая группа.");
         var target = PersonGroups.FirstOrDefault(x => x.Id == targetPersonId);
         if (target is null) throw new InvalidOperationException("Целевая группа больше не существует.");
-        await _database.AssignFaceToPersonAsync(face.FaceId, targetPersonId);
-        StatusText = $"Лицо из «{face.FileName}» перенесено в группу «{target.DisplayName}». Фотография не изменена.";
-        // Keep the source group selected after moving a face so the user can continue
-        // cleaning that group. LoadPeopleAsync preserves the current group by Id when
-        // it still contains faces; only an emptied/disappeared source falls back.
+        var movable = selected.Where(x => x.PersonId != targetPersonId).ToArray();
+        if (movable.Length == 0) return;
+
+        var sourcePersonId = SelectedPersonGroup?.Id;
+        var moved = await _database.AssignFacesToPersonAsync(movable.Select(x => x.FaceId), targetPersonId);
+        StatusText = moved == 1
+            ? $"Лицо из «{movable[0].FileName}» перенесено в группу «{target.DisplayName}». Фотография не изменена."
+            : $"Перенесено лиц: {moved:N0} → «{target.DisplayName}». Фотографии не изменены.";
+
+        // Match event-photo cleanup: stay in the source while it still exists so the user can
+        // continue sorting it. If the last selected faces emptied/deleted the source group,
+        // switch to the explicit target instead of an unrelated fallback group.
         await LoadPeopleAsync();
+        if (sourcePersonId is long sourceId && sourceId > 0 && PersonGroups.All(x => x.Id != sourceId))
+            SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == targetPersonId) ?? SelectedPersonGroup;
     }
 
     private async Task AssignSelectedFaceToPersonAsync()
     {
-        var face = SelectedPersonFace;
-        if (face is null) return;
-        var targets = PersonGroups.Where(x => x.Id > 0 && x.Id != face.PersonId).ToList();
+        var faces = GetSelectedPersonFaces();
+        if (faces.Count == 0) return;
+        var targets = PersonGroups
+            .Where(group => group.Id > 0 && faces.Any(face => face.PersonId != group.Id))
+            .ToList();
         if (targets.Count == 0)
         {
-            MessageBox.Show("Нет другой группы, куда можно назначить лицо.", "Люди", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Нет другой группы, куда можно назначить выбранные лица.", "Люди", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var dialog = new PersonPickerWindow("Назначить выбранное лицо человеку:", targets)
+        var prompt = faces.Count == 1
+            ? "Назначить выбранное лицо человеку:"
+            : $"Назначить {faces.Count:N0} выбранных лиц человеку:";
+        var dialog = new PersonPickerWindow(prompt, targets)
         {
             Owner = Application.Current?.MainWindow
         };
         if (dialog.ShowDialog() != true || dialog.SelectedGroup is null) return;
         var target = dialog.SelectedGroup;
-        await _database.AssignFaceToPersonAsync(face.FaceId, target.Id);
-        StatusText = $"Лицо назначено группе «{target.DisplayName}». Фотография не изменена.";
-        // Stay in the source group after assigning the face elsewhere.
+        var moveCount = faces.Count(x => x.PersonId != target.Id);
+        if (moveCount == 0) return;
+        var answer = MessageBox.Show(
+            moveCount == 1
+                ? $"Назначить выбранное лицо группе «{target.DisplayName}»?\n\nФотография не изменяется."
+                : $"Назначить {moveCount:N0} выбранных лиц группе «{target.DisplayName}»?\n\nФотографии не изменяются.",
+            "Назначить лица", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+        if (answer != MessageBoxResult.Yes) return;
+
+        await AssignFacesToPersonAsync(faces, target.Id);
+    }
+
+    public async Task MergePersonGroupsIntoAsync(IReadOnlyCollection<long> sourcePersonIds, long targetPersonId)
+    {
+        if (!CanPerformCatalogReview) throw new InvalidOperationException("Дождитесь окончания текущего анализа или файловой операции.");
+        if (targetPersonId <= 0) throw new ArgumentException("Некорректная целевая группа.");
+        var sourceIds = sourcePersonIds?.Where(x => x > 0 && x != targetPersonId).Distinct().ToArray() ?? [];
+        if (sourceIds.Length == 0) return;
+        var target = PersonGroups.FirstOrDefault(x => x.Id == targetPersonId)
+            ?? throw new InvalidOperationException("Целевая группа больше не существует.");
+        var existingSources = PersonGroups.Where(x => sourceIds.Contains(x.Id)).ToList();
+        if (existingSources.Count != sourceIds.Length)
+            throw new InvalidOperationException("Одна или несколько исходных групп людей больше не существуют.");
+
+        var allIds = sourceIds.Append(targetPersonId).Distinct().ToArray();
+        await _database.MergePersonGroupsBatchAsync(allIds, targetPersonId);
+        _preferredPersonMergeTargetId = targetPersonId;
+        StatusText = sourceIds.Length == 1
+            ? $"Группа «{existingSources[0].DisplayName}» объединена с «{target.DisplayName}». Оставлены имя и обложка цели; фотографии не изменены."
+            : $"Объединено групп: {sourceIds.Length + 1:N0} → «{target.DisplayName}». Оставлены имя и обложка цели; фотографии не изменены.";
         await LoadPeopleAsync();
+        SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == targetPersonId) ?? PersonGroups.FirstOrDefault();
     }
 
     private async Task MergeSelectedPersonGroupAsync()
@@ -2371,39 +2606,81 @@ public sealed class MainViewModel : ObservableObject
         SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == 0) ?? PersonGroups.FirstOrDefault();
     }
 
-    private async Task RemoveSelectedFaceFromPersonAsync()
+    public async Task RemoveFacesToUngroupedAsync(IReadOnlyCollection<FaceItem> faces)
     {
-        var face = SelectedPersonFace;
-        var group = SelectedPersonGroup;
-        if (face is null || group is null || !face.PersonId.HasValue) return;
-        var answer = MessageBox.Show(
-            $"Убрать это лицо из группы «{group.DisplayName}»?\n\nФотография не изменяется и никуда не перемещается. Лицо вернётся в «Без группы».",
-            "Убрать лицо из группы",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Question);
-        if (answer != MessageBoxResult.Yes) return;
+        if (!CanPerformCatalogReview) throw new InvalidOperationException("Дождитесь окончания текущего анализа или файловой операции.");
+        var selected = faces?.Where(x => x is { FaceId: > 0, PersonId: not null })
+            .GroupBy(x => x.FaceId).Select(x => x.First()).ToArray() ?? [];
+        if (selected.Length == 0) return;
+        var sourcePersonId = SelectedPersonGroup?.Id;
 
-        await _database.RemoveFaceFromPersonAsync(face.FaceId);
-        StatusText = "Лицо убрано из группы. Файл фотографии не изменён.";
+        var affected = await _database.RemoveFacesFromPersonAsync(selected.Select(x => x.FaceId));
+        StatusText = affected == 1
+            ? "Лицо убрано из группы. Файл фотографии не изменён."
+            : $"Из группы убрано лиц: {affected:N0}. Фотографии не изменены.";
         await LoadPeopleAsync();
-        SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == group.Id) ?? PersonGroups.FirstOrDefault(x => x.Id == 0) ?? PersonGroups.FirstOrDefault();
+        if (sourcePersonId is long sourceId && sourceId > 0 && PersonGroups.Any(x => x.Id == sourceId))
+            SelectedPersonGroup = PersonGroups.First(x => x.Id == sourceId);
+        else
+            SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == 0) ?? PersonGroups.FirstOrDefault();
     }
 
-    private async Task IgnoreSelectedFaceAsync()
+    public async Task DissolvePersonGroupsAsync(IReadOnlyCollection<long> personIds)
     {
-        var face = SelectedPersonFace;
-        if (face is null) return;
+        if (!CanPerformCatalogReview) throw new InvalidOperationException("Дождитесь окончания текущего анализа или файловой операции.");
+        var ids = personIds?.Where(x => x > 0).Distinct().ToArray() ?? [];
+        if (ids.Length == 0) return;
+        var groups = PersonGroups.Where(x => ids.Contains(x.Id)).ToArray();
+        if (groups.Length != ids.Length)
+            throw new InvalidOperationException("Одна или несколько исходных групп людей больше не существуют.");
+
+        var affected = await _database.DeletePersonGroupsAsync(ids);
+        StatusText = ids.Length == 1
+            ? $"Группа «{groups[0].DisplayName}» расформирована. Лиц возвращено в «Без группы»: {affected:N0}. Фотографии не изменены."
+            : $"Расформировано групп: {ids.Length:N0}. Лиц возвращено в «Без группы»: {affected:N0}. Фотографии не изменены.";
+        await LoadPeopleAsync();
+        SelectedPersonGroup = PersonGroups.FirstOrDefault(x => x.Id == 0) ?? PersonGroups.FirstOrDefault();
+    }
+
+    private async Task RemoveSelectedFaceFromPersonAsync()
+    {
+        var faces = GetSelectedPersonFaces().Where(x => x.PersonId is not null).ToList();
+        var group = SelectedPersonGroup;
+        if (faces.Count == 0 || group is null) return;
         var answer = MessageBox.Show(
-            "Пометить это обнаружение как «не лицо / не учитывать»?\n\nИсходная фотография не изменится. PAM сохранит служебную Undo-запись, поэтому последнее исключение можно восстановить кнопкой в разделе «Люди».",
-            "Игнорировать обнаружение",
+            faces.Count == 1
+                ? $"Убрать это лицо из группы «{group.DisplayName}»?\n\nФотография не изменяется и никуда не перемещается. Лицо вернётся в «Без группы»."
+                : $"Убрать {faces.Count:N0} выбранных лиц из группы «{group.DisplayName}»?\n\nФотографии не изменяются и никуда не перемещаются. Лица вернутся в «Без группы».",
+            "Убрать лица из группы",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question,
             MessageBoxResult.No);
         if (answer != MessageBoxResult.Yes) return;
 
-        await _database.IgnoreFaceWithUndoAsync(face.FaceId, "Одно лицо: " + face.FileName);
+        await RemoveFacesToUngroupedAsync(faces);
+    }
+
+    private async Task IgnoreSelectedFaceAsync()
+    {
+        var faces = GetSelectedPersonFaces();
+        if (faces.Count == 0) return;
+        var answer = MessageBox.Show(
+            faces.Count == 1
+                ? "Пометить это обнаружение как «не лицо / не учитывать»?\n\nИсходная фотография не изменится. PAM сохранит служебную Undo-запись, поэтому последнее исключение можно восстановить кнопкой в разделе «Люди»."
+                : $"Исключить {faces.Count:N0} выбранных обнаружений из раздела «Люди»?\n\nИсходные фотографии не изменятся. PAM сохранит одну атомарную Undo-запись для всего выделения.",
+            "Игнорировать обнаружения",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Question,
+            MessageBoxResult.No);
+        if (answer != MessageBoxResult.Yes) return;
+
+        var ignored = await _database.IgnoreFacesWithUndoAsync(
+            faces.Select(x => x.FaceId),
+            faces.Count == 1 ? "Одно лицо: " + faces[0].FileName : $"Выбранные лица: {faces.Count:N0}");
         LatestFaceIgnoreAction = await _database.GetLatestActiveFaceIgnoreActionAsync();
-        StatusText = "Обнаружение исключено из группировки. Undo доступен. Фотография не изменена.";
+        StatusText = ignored == 1
+            ? "Обнаружение исключено из группировки. Undo доступен. Фотография не изменена."
+            : $"Из группировки исключено выбранных обнаружений: {ignored:N0}. Одна Undo-запись сохранена; фотографии не изменены.";
         await LoadPeopleAsync();
     }
 
@@ -2733,7 +3010,9 @@ public sealed class MainViewModel : ObservableObject
             if (result.Moved <= 0)
                 throw new InvalidOperationException("Ни одна из выбранных фотографий больше не принадлежит исходному событию.");
 
-            await LoadEventsAsync(targetEventId);
+            // Match People cleanup: stay in the source while it still exists so the user can
+            // continue sorting it. Only jump to the target when the source became empty/deleted.
+            await LoadEventsAsync(result.SourceDeleted ? targetEventId : sourceEventId);
             StatusText = result.SourceDeleted
                 ? $"Перенесено фото: {result.Moved:N0} · «{sourceName}» опустело и удалено только из каталога · цель: «{targetName}»."
                 : $"Перенесено фото: {result.Moved:N0} · «{sourceName}» → «{targetName}». Файлы на диске не изменялись.";
@@ -3880,6 +4159,7 @@ public sealed class MainViewModel : ObservableObject
         PersonGroups.Clear();
         PersonFaces.Clear();
         SelectedPersonGroup = null;
+        _selectedPersonFaceIds.Clear();
         SelectedPersonFace = null;
         PeopleSummaryText = "Каталог изменился. Нажмите «Обновить» на вкладке «Люди»; изменённые фотографии будут повторно проиндексированы при следующем анализе лиц.";
 

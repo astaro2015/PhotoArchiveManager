@@ -7,6 +7,10 @@ $OutputEncoding = $Utf8NoBom
 Set-StrictMode -Version Latest
 
 $Root = Split-Path -Parent $PSScriptRoot
+$VersionFile = Join-Path $Root 'VERSION.txt'
+if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) { throw "VERSION.txt is missing: $VersionFile" }
+$AppVersion = [System.IO.File]::ReadAllText($VersionFile).Trim()
+if ($AppVersion -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw "VERSION.txt contains an invalid version: '$AppVersion'" }
 $OutputRoot = Join-Path $Root 'BUILD_OUTPUT'
 $ToolsRoot = Join-Path $Root '.tools'
 $DotnetDir = Join-Path $ToolsRoot 'dotnet'
@@ -15,9 +19,17 @@ $InstallScript = Join-Path $ToolsRoot 'dotnet-install.ps1'
 $SetupLog = Join-Path $OutputRoot 'setup.log'
 $BuildLog = Join-Path $OutputRoot 'build.log'
 $LastError = Join-Path $OutputRoot 'LAST_ERROR.txt'
-$PublishDir = Join-Path $OutputRoot 'PhotoArchiveManager_1.15.3_win-x64'
-$ZipPath = Join-Path $OutputRoot 'PhotoArchiveManager_1.15.3_win-x64.zip'
+$PublishDir = Join-Path $OutputRoot ("PhotoArchiveManager_${AppVersion}_win-x64")
+$ZipPath = Join-Path $OutputRoot ("PhotoArchiveManager_${AppVersion}_win-x64.zip")
 $Project = Join-Path $Root 'src\PhotoArchiveManager\PhotoArchiveManager.csproj'
+if (-not (Test-Path -LiteralPath $Project -PathType Leaf)) { throw "Project file is missing: $Project" }
+[xml]$ProjectXml = [System.IO.File]::ReadAllText($Project)
+$ProjectVersionNode = $ProjectXml.SelectSingleNode('/Project/PropertyGroup/Version')
+if ($null -eq $ProjectVersionNode) { throw 'PhotoArchiveManager.csproj does not define <Version>.' }
+$ProjectVersion = [string]$ProjectVersionNode.InnerText
+if (-not [string]::Equals($ProjectVersion.Trim(), $AppVersion, [System.StringComparison]::Ordinal)) {
+    throw "Version mismatch: VERSION.txt=$AppVersion but PhotoArchiveManager.csproj=$ProjectVersion. Refusing to build a mislabeled release."
+}
 $AssetsDir = Join-Path $Root 'src\PhotoArchiveManager\Assets'
 $SFaceModel = Join-Path $AssetsDir 'face_recognition_sface_2021dec.onnx'
 $SFaceSha256 = '0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79'
@@ -33,6 +45,8 @@ New-Item -ItemType Directory -Force -Path $OutputRoot, $ToolsRoot | Out-Null
 Remove-Item $LastError -Force -ErrorAction SilentlyContinue
 "Build started: $(Get-Date -Format o)" | Set-Content -Encoding UTF8 $SetupLog
 "Build started: $(Get-Date -Format o)" | Set-Content -Encoding UTF8 $BuildLog
+"Version: $AppVersion" | Add-Content -Encoding UTF8 $SetupLog
+"Version: $AppVersion" | Add-Content -Encoding UTF8 $BuildLog
 
 function Write-Setup([string]$Message) {
     $Message | Tee-Object -FilePath $SetupLog -Append
@@ -612,6 +626,11 @@ try {
     $SelfTestText | Add-Content -Encoding UTF8 $BuildLog
     if ($SelfTestText.IndexOf('RESULT=OK', [System.StringComparison]::Ordinal) -lt 0) {
         Fail 'Final portable EXE self-test did not report RESULT=OK. See BUILD_OUTPUT\portable_self_test.txt.'
+    }
+    $ExpectedVersionLine = 'Version=' + $AppVersion
+    $SelfTestLines = $SelfTestText -split "`r?`n"
+    if (-not ($SelfTestLines -contains $ExpectedVersionLine)) {
+        Fail "Final portable EXE reports a different version. Expected '$ExpectedVersionLine'. See BUILD_OUTPUT\portable_self_test.txt."
     }
     Write-Setup 'Portable self-test OK: SQLite schema + embedded OpenCvSharpExtern + YuNet/SFace load from the final EXE.'
 

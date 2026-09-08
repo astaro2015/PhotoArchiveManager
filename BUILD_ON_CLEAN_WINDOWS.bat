@@ -2,10 +2,23 @@
 chcp 65001 >nul
 setlocal EnableExtensions
 cd /d "%~dp0"
-title Photo Archive Manager 1.15.3 - Build
+
+if not exist "%~dp0VERSION.txt" (
+  echo ERROR: VERSION.txt was not found next to BUILD_ON_CLEAN_WINDOWS.bat.
+  pause
+  exit /b 1
+)
+set /p PAM_VERSION=<"%~dp0VERSION.txt"
+if "%PAM_VERSION%"=="" (
+  echo ERROR: VERSION.txt is empty.
+  pause
+  exit /b 1
+)
+
+title Photo Archive Manager %PAM_VERSION% - Build
 
 echo ============================================================
-echo        PHOTO ARCHIVE MANAGER 1.15.3 - CLEAN WINDOWS BUILD
+echo        PHOTO ARCHIVE MANAGER %PAM_VERSION% - CLEAN WINDOWS BUILD
 echo ============================================================
 echo.
 echo No Visual Studio or preinstalled .NET SDK is required.
@@ -25,8 +38,8 @@ if not "%ERR%"=="0" (
   echo ============================================================
   echo                       BUILD SUCCESS
   echo ============================================================
-  echo Single EXE:  BUILD_OUTPUT\PhotoArchiveManager_1.15.3_win-x64\PhotoArchiveManager.exe
-  echo ZIP:         BUILD_OUTPUT\PhotoArchiveManager_1.15.3_win-x64.zip
+  echo Single EXE:  BUILD_OUTPUT\PhotoArchiveManager_%PAM_VERSION%_win-x64\PhotoArchiveManager.exe
+  echo ZIP:         BUILD_OUTPUT\PhotoArchiveManager_%PAM_VERSION%_win-x64.zip
 )
 echo.
 pause

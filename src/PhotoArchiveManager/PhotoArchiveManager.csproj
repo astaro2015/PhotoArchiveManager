@@ -9,9 +9,9 @@
     <AssemblyName>PhotoArchiveManager</AssemblyName>
     <RootNamespace>PhotoArchiveManager</RootNamespace>
     <ApplicationIcon>Assets\PhotoArchiveManager.ico</ApplicationIcon>
-    <Version>1.15.3</Version>
-    <AssemblyVersion>1.15.3.0</AssemblyVersion>
-    <FileVersion>1.15.3.0</FileVersion>
+    <Version>1.15.7</Version>
+    <AssemblyVersion>1.15.7.0</AssemblyVersion>
+    <FileVersion>1.15.7.0</FileVersion>
     <Authors>Привалов Олег</Authors>
     <Company>Привалов Олег</Company>
     <Product>Photo Archive Manager</Product>
@@ -27,6 +27,10 @@
     <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
     <RunAnalyzersDuringLiveAnalysis>false</RunAnalyzersDuringLiveAnalysis>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Keep NuGet vulnerability auditing enabled, but a temporary/network-only audit-source failure
+         (NU1900) must not turn an otherwise valid restore into a release failure. The warning stays
+         visible in the log. Real vulnerability warnings NU1901-NU1904 are still errors. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900</WarningsNotAsErrors>
     <!-- OpenCvSharp 4.13 analyzer was compiled with Roslyn 4.14 while the clean-build SDK currently uses 4.11. Runtime is unaffected. -->
     <NoWarn>$(NoWarn);CS9057</NoWarn>
   </PropertyGroup>

@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:conv="clr-namespace:PhotoArchiveManager.Converters"
         xmlns:models="clr-namespace:PhotoArchiveManager.Models"
-        Title="Photo Archive Manager · 1.15.3"
+        xmlns:services="clr-namespace:PhotoArchiveManager.Services"
+        Title="Photo Archive Manager"
         Icon="Assets/PhotoArchiveManager.ico"
         Width="1560" Height="940" MinWidth="1180" MinHeight="720"
         WindowStartupLocation="CenterScreen">
@@ -124,7 +125,7 @@
                         </Border>
 
                         <Grid Grid.Row="1">
-                            <ListBox x:Name="LibraryPhotosList" ItemsSource="{Binding Photos}" SelectedItem="{Binding SelectedPhoto}" SelectionMode="Extended" MouseDoubleClick="PhotoList_MouseDoubleClick" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
+                            <ListBox x:Name="LibraryPhotosList" ItemsSource="{Binding Photos}" SelectedItem="{Binding SelectedPhoto}" SelectionMode="Extended" PreviewKeyDown="MultiSelectList_PreviewKeyDown" MouseDoubleClick="PhotoList_MouseDoubleClick" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
                                      ScrollViewer.IsDeferredScrollingEnabled="True"
                                      VirtualizingPanel.IsVirtualizing="True"
                                      VirtualizingPanel.VirtualizationMode="Recycling"
@@ -661,9 +662,9 @@
                                     <Separator/>
                                     <MenuItem Header="Сравнить 2–8 кадров" Click="CompareVisual_Click"/>
                                     <MenuItem Header="Оценить качество всей группы" Command="{Binding AnalyzeSelectedQualityCommand}"/>
-                                    <MenuItem Header="Снять все галочки" Command="{Binding ClearVisualReviewCommand}"/>
+                                    <MenuItem Header="Снять ВСЕ галочки во вкладке" Command="{Binding ClearVisualReviewCommand}"/>
                                     <Separator/>
-                                    <MenuItem Header="В карантин отмеченные" Command="{Binding QuarantineMarkedVisualCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
+                                    <MenuItem Header="В карантин все отмеченные" Command="{Binding QuarantineMarkedVisualCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
                                 </ContextMenu>
                             </ListBox.ContextMenu>
                             <ListBox.ItemTemplate>
@@ -729,11 +730,11 @@
                                     </StackPanel>
                                     <Separator Margin="0,12,0,8"/>
                                     <TextBlock Text="Ручной разбор группы" Style="{StaticResource SectionLabelStyle}" Margin="0,0,0,5"/>
-                                    <Button Content="В карантин отмеченные" Command="{Binding QuarantineMarkedVisualCommand}" FontWeight="SemiBold" Margin="3,2" Style="{StaticResource DangerButtonStyle}"/>
-                                    <Button Content="Снять все галочки" Command="{Binding ClearVisualReviewCommand}" Margin="3,2"/>
+                                    <Button Content="В карантин все отмеченные" Command="{Binding QuarantineMarkedVisualCommand}" FontWeight="SemiBold" Margin="3,2" Style="{StaticResource DangerButtonStyle}"/>
+                                    <Button Content="Снять ВСЕ галочки во вкладке" Command="{Binding ClearVisualReviewCommand}" Margin="3,2"/>
                                     <Border Style="{StaticResource WarningBorderStyle}" Margin="0,12,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource WarningTextBrush}"
-                                                   Text="Похожесть не доказывает дубль. Единственная ручная отметка — «в карантин»: отмеченные файлы будут убраны, все неотмеченные останутся на месте. PAM не позволит отправить в карантин всю группу. Quality Score v3.3 — только локальная техническая/лицевая подсказка."/>
+                                                   Text="Похожесть не доказывает дубль. Единственная ручная отметка — «в карантин»: отметки сохраняются при переходе между группами, а команда «В карантин все отмеченные» собирает их по всей вкладке. Все неотмеченные файлы останутся на месте; PAM не позволит выполнить группу, в которой отмечены все файлы. Quality Score v3.3 — только локальная техническая/лицевая подсказка."/>
                                     </Border>
                                 </StackPanel>
                             </ScrollViewer>
@@ -806,9 +807,9 @@
                                     <MenuItem Header="Оценить качество всей серии" Command="{Binding AnalyzeSelectedBurstQualityCommand}"/>
                                     <MenuItem Header="Принять рекомендацию" Command="{Binding ApplyBurstRecommendationCommand}"/>
                                     <MenuItem Header="Отметить остальные в карантин" Command="{Binding MarkBurstOthersCommand}"/>
-                                    <MenuItem Header="Снять все галочки" Command="{Binding ClearBurstReviewCommand}"/>
+                                    <MenuItem Header="Снять ВСЕ галочки во вкладке" Command="{Binding ClearBurstReviewCommand}"/>
                                     <Separator/>
-                                    <MenuItem Header="В карантин отмеченные" Command="{Binding QuarantineMarkedBurstCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
+                                    <MenuItem Header="В карантин все отмеченные" Command="{Binding QuarantineMarkedBurstCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
                                 </ContextMenu>
                             </ListBox.ContextMenu>
                             <ListBox.ItemTemplate>
@@ -882,8 +883,8 @@
                                     </StackPanel>
                                     <Button Content="Применить рекомендацию" Command="{Binding ApplyBurstRecommendationCommand}" FontWeight="SemiBold" Margin="3,5,3,2" ToolTip="Отметить в карантин все кадры, кроме рекомендованных PAM"/>
                                     <Button Content="Отметить остальные в карантин" Command="{Binding MarkBurstOthersCommand}" Margin="3,2"/>
-                                    <Button Content="В карантин отмеченные" Command="{Binding QuarantineMarkedBurstCommand}" FontWeight="SemiBold" Margin="3,2" Style="{StaticResource DangerButtonStyle}"/>
-                                    <Button Content="Снять все галочки" Command="{Binding ClearBurstReviewCommand}" Margin="3,2"/>
+                                    <Button Content="В карантин все отмеченные" Command="{Binding QuarantineMarkedBurstCommand}" FontWeight="SemiBold" Margin="3,2" Style="{StaticResource DangerButtonStyle}"/>
+                                    <Button Content="Снять ВСЕ галочки во вкладке" Command="{Binding ClearBurstReviewCommand}" Margin="3,2"/>
 
                                     <Border Style="{StaticResource SuccessBorderStyle}" Margin="0,10,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource SuccessTextBrush}"
@@ -891,7 +892,7 @@
                                     </Border>
                                     <Border Style="{StaticResource WarningBorderStyle}" Margin="0,10,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource WarningTextBrush}"
-                                                   Text="Неотмеченные кадры остаются. Галочка «в карантин» означает только намерение убрать кадр; физический перенос выполняется отдельно кнопкой «В карантин отмеченные». PAM не позволит отметить к выполнению всю серию без оставшегося кадра."/>
+                                                   Text="Неотмеченные кадры остаются. Галочки «в карантин» сохраняются при переходе между сериями; кнопка «В карантин все отмеченные» собирает их по всей вкладке и перед переносом показывает общий итог. PAM не позволит выполнить серию без оставшегося неотмеченного кадра."/>
                                     </Border>
                                 </StackPanel>
                             </ScrollViewer>
@@ -932,9 +933,9 @@
                         <StackPanel>
                             <TextBlock Text="{Binding PeopleSummaryText}" FontWeight="SemiBold" TextWrapping="Wrap"/>
                             <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap"
-                                       Text="Распознавание локальное. Автогруппы — предложения; названные вручную группы не пересобираются автоматически. Лицо можно перетащить на другую группу слева."/>
+                                       Text="Распознавание локальное. Автогруппы — предложения; названные вручную группы не пересобираются автоматически. В среднем списке можно выделить несколько лиц и перетащить их пачкой на другую группу слева."/>
                             <TextBlock Margin="0,4,0,0" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"
-                                       Text="Ctrl/Shift: можно выделить несколько групп людей. Объединение, расформирование и исключение применяются ко всему выделению."/>
+                                       Text="Ctrl/Shift/Ctrl+A: несколько групп можно объединять, расформировывать, исключать и перетаскивать на целевую группу; несколько лиц — назначать, убирать, исключать и перетаскивать пачкой. Перетаскивание на «Без группы» возвращает лица/группы туда же, что соответствующая команда расформирования."/>
                             <TextBlock Margin="0,4,0,0" Foreground="{StaticResource AccentBrush}" FontSize="12" FontWeight="SemiBold" TextWrapping="Wrap"
                                        Text="{Binding PersonSelectionSummaryText}"/>
                         </StackPanel>
@@ -948,7 +949,7 @@
                             <ColumnDefinition Width="340" MinWidth="280"/>
                         </Grid.ColumnDefinitions>
 
-                        <ListBox x:Name="PersonGroupsList" Grid.Column="0" ItemsSource="{Binding PersonGroups}" SelectedItem="{Binding SelectedPersonGroup}" SelectionMode="Extended" SelectionChanged="PersonGroupsList_SelectionChanged" PreviewKeyDown="PersonGroupsList_PreviewKeyDown" AllowDrop="True" PreviewDragOver="PersonGroupsList_PreviewDragOver" Drop="PersonGroupsList_Drop" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
+                        <ListBox x:Name="PersonGroupsList" Grid.Column="0" ItemsSource="{Binding PersonGroups}" SelectedItem="{Binding SelectedPersonGroup}" SelectionMode="Extended" SelectionChanged="PersonGroupsList_SelectionChanged" PreviewKeyDown="MultiSelectList_PreviewKeyDown" AllowDrop="True" PreviewMouseLeftButtonDown="PersonGroupsList_PreviewMouseLeftButtonDown" PreviewMouseMove="PersonGroupsList_PreviewMouseMove" PreviewDragOver="PersonGroupsList_PreviewDragOver" Drop="PersonGroupsList_Drop" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
                                  BorderThickness="0,0,1,0" BorderBrush="{StaticResource BorderBrushSoft}"
                                  VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
                             <ListBox.ContextMenu>
@@ -981,7 +982,7 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
 
-                        <ListBox x:Name="PersonFacesList" Grid.Column="1" ItemsSource="{Binding PersonFaces}" SelectedItem="{Binding SelectedPersonFace}" MouseDoubleClick="PhotoList_MouseDoubleClick" PreviewMouseLeftButtonDown="PersonFacesList_PreviewMouseLeftButtonDown" PreviewMouseMove="PersonFacesList_PreviewMouseMove" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
+                        <ListBox x:Name="PersonFacesList" Grid.Column="1" ItemsSource="{Binding PersonFaces}" SelectedItem="{Binding SelectedPersonFace}" SelectionMode="Extended" SelectionChanged="PersonFacesList_SelectionChanged" PreviewKeyDown="MultiSelectList_PreviewKeyDown" MouseDoubleClick="PhotoList_MouseDoubleClick" PreviewMouseLeftButtonDown="PersonFacesList_PreviewMouseLeftButtonDown" PreviewMouseMove="PersonFacesList_PreviewMouseMove" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
                                  BorderThickness="0" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
                             <ListBox.ContextMenu>
                                 <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
@@ -990,9 +991,9 @@
                                     <MenuItem Header="Открыть фото" Command="{Binding OpenPersonPhotoCommand}"/>
                                     <Separator/>
                                     <MenuItem Header="Сделать выбранное лицо обложкой" Command="{Binding SetPersonCoverCommand}"/>
-                                    <MenuItem Header="Назначить выбранное лицо другому человеку…" Command="{Binding AssignFaceToPersonCommand}"/>
-                                    <MenuItem Header="Убрать это лицо из группы" Command="{Binding RemoveFaceFromPersonCommand}"/>
-                                    <MenuItem Header="Это не лицо — игнорировать" Command="{Binding IgnoreFaceCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
+                                    <MenuItem Header="{Binding AssignFaceActionText}" Command="{Binding AssignFaceToPersonCommand}"/>
+                                    <MenuItem Header="{Binding RemoveFaceActionText}" Command="{Binding RemoveFaceFromPersonCommand}"/>
+                                    <MenuItem Header="{Binding IgnoreFaceActionText}" Command="{Binding IgnoreFaceCommand}" Style="{StaticResource DangerMenuItemStyle}"/>
                                     <Separator/>
                                     <MenuItem Header="Назвать / переименовать группу" Command="{Binding RenamePersonCommand}"/>
                                     <MenuItem Header="{Binding MergePersonActionText}" Command="{Binding MergePersonGroupCommand}"/>
@@ -1063,10 +1064,10 @@
                                     <Button Content="Восстановить последнее исключение" Command="{Binding UndoLastFaceIgnoreCommand}"/>
                                     <TextBlock Text="{Binding FaceIgnoreUndoText}" Foreground="{StaticResource SecondaryTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="3,3,3,5"/>
                                     <Separator Margin="0,7,0,5"/>
-                                    <Button Content="Назначить выбранное лицо другому человеку…" Command="{Binding AssignFaceToPersonCommand}"/>
+                                    <Button Content="{Binding AssignFaceActionText}" Command="{Binding AssignFaceToPersonCommand}"/>
                                     <Button Content="Показать все фото человека в библиотеке" Command="{Binding ShowPersonPhotosCommand}"/>
-                                    <Button Content="Убрать это лицо из группы" Command="{Binding RemoveFaceFromPersonCommand}"/>
-                                    <Button Content="Это не лицо — игнорировать" Command="{Binding IgnoreFaceCommand}"/>
+                                    <Button Content="{Binding RemoveFaceActionText}" Command="{Binding RemoveFaceFromPersonCommand}"/>
+                                    <Button Content="{Binding IgnoreFaceActionText}" Command="{Binding IgnoreFaceCommand}"/>
 
                                     <Border Style="{StaticResource InfoBorderStyle}" Margin="0,12,0,0">
                                         <TextBlock TextWrapping="Wrap" Foreground="{StaticResource SecondaryTextBrush}"
@@ -1166,7 +1167,7 @@
                         </Border>
 
                         <ListBox x:Name="EventPhotosList" Grid.Column="1" ItemsSource="{Binding EventPhotos}" SelectedItem="{Binding SelectedEventPhoto}"
-                                 SelectionMode="Extended" MouseDoubleClick="PhotoList_MouseDoubleClick" PreviewMouseLeftButtonDown="EventPhotosList_PreviewMouseLeftButtonDown" PreviewMouseMove="EventPhotosList_PreviewMouseMove" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
+                                 SelectionMode="Extended" PreviewKeyDown="MultiSelectList_PreviewKeyDown" MouseDoubleClick="PhotoList_MouseDoubleClick" PreviewMouseLeftButtonDown="EventPhotosList_PreviewMouseLeftButtonDown" PreviewMouseMove="EventPhotosList_PreviewMouseMove" PreviewMouseRightButtonDown="ListBox_PreviewMouseRightButtonDown"
                                  BorderThickness="0" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
                             <ListBox.ContextMenu>
                                 <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
@@ -1617,7 +1618,7 @@
                             <StackPanel>
                                 <TextBlock Text="О программе" FontSize="16" FontWeight="SemiBold"/>
                                 <TextBlock Text="Photo Archive Manager" FontSize="17" FontWeight="SemiBold" Margin="0,8,0,0"/>
-                                <TextBlock Text="Версия: 1.15.3" Margin="0,6,0,0"/>
+                                <TextBlock Margin="0,6,0,0"><Run Text="Версия: "/><Run Text="{x:Static services:AppPaths.AppVersion}"/></TextBlock>
                                 <TextBlock Text="Разработчик: Привалов Олег" Margin="0,4,0,0"/>
                                 <TextBlock Text="Дата создания проекта: 01.09.2026" Margin="0,4,0,0"/>
                             </StackPanel>

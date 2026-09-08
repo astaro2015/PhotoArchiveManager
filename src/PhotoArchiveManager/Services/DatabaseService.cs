@@ -2410,6 +2410,103 @@ public sealed class DatabaseService
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task<int> AssignFacesToPersonAsync(IEnumerable<long> faceIds, long personId, CancellationToken cancellationToken = default)
+    {
+        var ids = faceIds?.Where(x => x > 0).Distinct().ToArray() ?? [];
+        if (ids.Length == 0) return 0;
+        if (personId <= 0) throw new ArgumentOutOfRangeException(nameof(personId));
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+
+        await using (var targetCheck = connection.CreateCommand())
+        {
+            targetCheck.Transaction = transaction;
+            targetCheck.CommandText = "SELECT COUNT(*) FROM People WHERE Id=$target;";
+            targetCheck.Parameters.AddWithValue("$target", personId);
+            if (Convert.ToInt32(await targetCheck.ExecuteScalarAsync(cancellationToken)) != 1)
+                throw new InvalidOperationException("Целевая группа человека больше не существует.");
+        }
+
+        var previousPersonIds = new HashSet<long>();
+        var found = 0;
+        const int batchSize = 800;
+        for (var offset = 0; offset < ids.Length; offset += batchSize)
+        {
+            var batch = ids.Skip(offset).Take(batchSize).ToArray();
+            var names = batch.Select((_, i) => "$f" + i).ToArray();
+            await using var read = connection.CreateCommand();
+            read.Transaction = transaction;
+            read.CommandText = $"SELECT Id,PersonId FROM DetectedFaces WHERE Id IN ({string.Join(',', names)});";
+            for (var i = 0; i < batch.Length; i++) read.Parameters.AddWithValue(names[i], batch[i]);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                found++;
+                if (!reader.IsDBNull(1)) previousPersonIds.Add(reader.GetInt64(1));
+            }
+        }
+        if (found != ids.Length)
+            throw new InvalidOperationException("Одно или несколько выбранных лиц больше не существуют.");
+
+        var moved = 0;
+        for (var offset = 0; offset < ids.Length; offset += batchSize)
+        {
+            var batch = ids.Skip(offset).Take(batchSize).ToArray();
+            var names = batch.Select((_, i) => "$f" + i).ToArray();
+            var inClause = string.Join(',', names);
+
+            await using (var clearCover = connection.CreateCommand())
+            {
+                clearCover.Transaction = transaction;
+                clearCover.CommandText = $"UPDATE People SET RepresentativeFaceId=NULL, UpdatedUtc=$utc WHERE Id<>$target AND RepresentativeFaceId IN ({inClause});";
+                clearCover.Parameters.AddWithValue("$target", personId);
+                clearCover.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+                for (var i = 0; i < batch.Length; i++) clearCover.Parameters.AddWithValue(names[i], batch[i]);
+                await clearCover.ExecuteNonQueryAsync(cancellationToken);
+            }
+
+            await using (var update = connection.CreateCommand())
+            {
+                update.Transaction = transaction;
+                update.CommandText = $"UPDATE DetectedFaces SET PersonId=$target, IsIgnored=0 WHERE Id IN ({inClause});";
+                update.Parameters.AddWithValue("$target", personId);
+                for (var i = 0; i < batch.Length; i++) update.Parameters.AddWithValue(names[i], batch[i]);
+                moved += await update.ExecuteNonQueryAsync(cancellationToken);
+            }
+        }
+        if (moved != ids.Length)
+            throw new InvalidOperationException("Не удалось назначить все выбранные лица целевой группе.");
+
+        var now = DateTime.UtcNow.ToString("O");
+        await using (var pinTarget = connection.CreateCommand())
+        {
+            pinTarget.Transaction = transaction;
+            pinTarget.CommandText = "UPDATE People SET IsAuto=0, UpdatedUtc=$utc WHERE Id=$target;";
+            pinTarget.Parameters.AddWithValue("$target", personId);
+            pinTarget.Parameters.AddWithValue("$utc", now);
+            await pinTarget.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        foreach (var sourceId in previousPersonIds.Where(x => x > 0 && x != personId))
+        {
+            await using var pinOrCleanup = connection.CreateCommand();
+            pinOrCleanup.Transaction = transaction;
+            pinOrCleanup.CommandText = """
+                UPDATE People SET IsAuto=0, UpdatedUtc=$utc
+                WHERE Id=$source AND EXISTS(SELECT 1 FROM DetectedFaces WHERE PersonId=$source);
+                DELETE FROM People WHERE Id=$source AND NOT EXISTS(SELECT 1 FROM DetectedFaces WHERE PersonId=$source);
+                """;
+            pinOrCleanup.Parameters.AddWithValue("$source", sourceId);
+            pinOrCleanup.Parameters.AddWithValue("$utc", now);
+            await pinOrCleanup.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return moved;
+    }
+
     public async Task MergePersonGroupsAsync(long sourcePersonId, long targetPersonId, CancellationToken cancellationToken = default)
     {
         if (sourcePersonId <= 0 || targetPersonId <= 0 || sourcePersonId == targetPersonId)
@@ -2688,6 +2785,78 @@ public sealed class DatabaseService
         await transaction.CommitAsync(cancellationToken);
     }
 
+    public async Task<int> RemoveFacesFromPersonAsync(IEnumerable<long> faceIds, CancellationToken cancellationToken = default)
+    {
+        var ids = faceIds?.Where(x => x > 0).Distinct().ToArray() ?? [];
+        if (ids.Length == 0) return 0;
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+
+        var previousPersonIds = new HashSet<long>();
+        var found = 0;
+        var assigned = 0;
+        const int batchSize = 800;
+        for (var offset = 0; offset < ids.Length; offset += batchSize)
+        {
+            var batch = ids.Skip(offset).Take(batchSize).ToArray();
+            var names = batch.Select((_, i) => "$f" + i).ToArray();
+            await using var read = connection.CreateCommand();
+            read.Transaction = transaction;
+            read.CommandText = $"SELECT Id,PersonId FROM DetectedFaces WHERE Id IN ({string.Join(',', names)});";
+            for (var i = 0; i < batch.Length; i++) read.Parameters.AddWithValue(names[i], batch[i]);
+            await using var reader = await read.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                found++;
+                if (!reader.IsDBNull(1))
+                {
+                    assigned++;
+                    previousPersonIds.Add(reader.GetInt64(1));
+                }
+            }
+        }
+        if (found != ids.Length)
+            throw new InvalidOperationException("Одно или несколько выбранных лиц больше не существуют.");
+        if (assigned != ids.Length)
+            throw new InvalidOperationException("Одно или несколько выбранных лиц уже находятся в «Без группы». Операция отменена целиком.");
+
+        for (var offset = 0; offset < ids.Length; offset += batchSize)
+        {
+            var batch = ids.Skip(offset).Take(batchSize).ToArray();
+            var names = batch.Select((_, i) => "$f" + i).ToArray();
+            var inClause = string.Join(',', names);
+            await using var update = connection.CreateCommand();
+            update.Transaction = transaction;
+            update.CommandText = $"""
+                UPDATE People SET RepresentativeFaceId=NULL, IsAuto=0, UpdatedUtc=$utc WHERE RepresentativeFaceId IN ({inClause});
+                UPDATE DetectedFaces SET PersonId=NULL WHERE Id IN ({inClause}) AND PersonId IS NOT NULL;
+                """;
+            update.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+            for (var i = 0; i < batch.Length; i++) update.Parameters.AddWithValue(names[i], batch[i]);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        var now = DateTime.UtcNow.ToString("O");
+        foreach (var sourceId in previousPersonIds.Where(x => x > 0))
+        {
+            await using var pinOrCleanup = connection.CreateCommand();
+            pinOrCleanup.Transaction = transaction;
+            pinOrCleanup.CommandText = """
+                UPDATE People SET IsAuto=0, UpdatedUtc=$utc
+                WHERE Id=$source AND EXISTS(SELECT 1 FROM DetectedFaces WHERE PersonId=$source);
+                DELETE FROM People WHERE Id=$source AND NOT EXISTS(SELECT 1 FROM DetectedFaces WHERE PersonId=$source);
+                """;
+            pinOrCleanup.Parameters.AddWithValue("$source", sourceId);
+            pinOrCleanup.Parameters.AddWithValue("$utc", now);
+            await pinOrCleanup.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return assigned;
+    }
+
     public async Task IgnoreFaceAsync(long faceId, CancellationToken cancellationToken = default)
     {
         await using var connection = CreateConnection();
@@ -2877,6 +3046,68 @@ public sealed class DatabaseService
 
         await transaction.CommitAsync(cancellationToken);
         return (totalFaces, actionCount);
+    }
+
+    public async Task<int> IgnoreFacesWithUndoAsync(IEnumerable<long> faceIds, string scopeLabel, CancellationToken cancellationToken = default)
+    {
+        var ids = faceIds?.Where(x => x > 0).Distinct().ToArray() ?? [];
+        if (ids.Length == 0) return 0;
+        scopeLabel = string.IsNullOrWhiteSpace(scopeLabel) ? $"Выбранные лица: {ids.Length:N0}" : scopeLabel.Trim();
+
+        await using var connection = CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+
+        long actionId;
+        await using (var action = connection.CreateCommand())
+        {
+            action.Transaction = transaction;
+            action.CommandText = "INSERT INTO FaceIgnoreActions(ScopeType,ScopeLabel,PersonId,PersonName,PersonIsAuto,CreatedUtc) VALUES('faces',$label,NULL,'',1,$utc); SELECT last_insert_rowid();";
+            action.Parameters.AddWithValue("$label", scopeLabel);
+            action.Parameters.AddWithValue("$utc", DateTime.UtcNow.ToString("O"));
+            actionId = Convert.ToInt64(await action.ExecuteScalarAsync(cancellationToken));
+        }
+
+        const int batchSize = 800;
+        for (var offset = 0; offset < ids.Length; offset += batchSize)
+        {
+            var batch = ids.Skip(offset).Take(batchSize).ToArray();
+            var names = batch.Select((_, i) => "$f" + i).ToArray();
+            await using var snapshot = connection.CreateCommand();
+            snapshot.Transaction = transaction;
+            snapshot.CommandText = $"INSERT INTO FaceIgnoreActionItems(ActionId,FaceId,PreviousPersonId) SELECT $action,Id,PersonId FROM DetectedFaces WHERE IsIgnored=0 AND Id IN ({string.Join(',', names)});";
+            snapshot.Parameters.AddWithValue("$action", actionId);
+            for (var i = 0; i < batch.Length; i++) snapshot.Parameters.AddWithValue(names[i], batch[i]);
+            await snapshot.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        int count;
+        await using (var countCmd = connection.CreateCommand())
+        {
+            countCmd.Transaction = transaction;
+            countCmd.CommandText = "SELECT COUNT(*) FROM FaceIgnoreActionItems WHERE ActionId=$action;";
+            countCmd.Parameters.AddWithValue("$action", actionId);
+            count = Convert.ToInt32(await countCmd.ExecuteScalarAsync(cancellationToken));
+        }
+        if (count == 0)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return 0;
+        }
+        if (count != ids.Length)
+            throw new InvalidOperationException("Одно или несколько выбранных лиц уже исчезли или были исключены. Операция отменена целиком.");
+
+        await using (var ignore = connection.CreateCommand())
+        {
+            ignore.Transaction = transaction;
+            ignore.CommandText = "UPDATE DetectedFaces SET IsIgnored=1, PersonId=NULL WHERE Id IN (SELECT FaceId FROM FaceIgnoreActionItems WHERE ActionId=$action);";
+            ignore.Parameters.AddWithValue("$action", actionId);
+            if (await ignore.ExecuteNonQueryAsync(cancellationToken) != count)
+                throw new InvalidOperationException("Не удалось исключить все выбранные лица. Операция отменена целиком.");
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return count;
     }
 
     public async Task<int> IgnoreFaceWithUndoAsync(long faceId, string scopeLabel, CancellationToken cancellationToken = default)

@@ -1,4 +1,4 @@
-Photo Archive Manager — КАНОНИЧЕСКАЯ БАЗА 1.15.3
+Photo Archive Manager — КАНОНИЧЕСКАЯ БАЗА 1.15.7
 
 ОБЯЗАТЕЛЬНО СОХРАНИТЬ:
 - 1.11.0 построена поверх 1.10.2 и добавляет быструю безопасную раскладку по датам; отвергнутую 1.6.2 не использовать как базу/источник XAML;
@@ -9,6 +9,35 @@ Photo Archive Manager — КАНОНИЧЕСКАЯ БАЗА 1.15.3
 - рейтинг/«Избранное» больше не являются функциями PAM; новая SQLite-база эти колонки не создаёт, а существующие legacy-колонки старой Data остаются нетронутыми;
 - Библиотека ориентирована на разбор: проблемные статусы + сортировка; ручная обложка события приоритетна, fallback использует Quality Score;
 - быстрая раскладка не создаёт копии: это безопасное физическое перемещение с Preview/SHA-256/Undo.
+
+НОВОЕ В 1.15.7:
+- Compile hotfix: в `MainWindow.xaml.cs` устранён `CS0136` в `PersonGroupsList_Drop`; локальная переменная подтверждения для drop групп в «Без группы» переименована из `sourceText` в `dissolveSourceText`.
+- Функциональное поведение 1.15.6 не менялось; NU1900 остаётся non-fatal warning, NU1901-NU1904 остаются errors.
+- SQLite user_version=20, QualityAlgorithmVersion=6.
+
+НОВОЕ В 1.15.6:
+- Build hotfix: `NU1900` добавлен в `WarningsNotAsErrors`, поэтому недоступность NuGet vulnerability data не ломает restore при `TreatWarningsAsErrors=true`.
+- NuGet Audit остаётся включён; NU1900 остаётся видимым warning. Реальные vulnerability warnings NU1901-NU1904 и все остальные неразрешённые warnings по-прежнему являются errors.
+- Функциональный код/SQLite/Quality не менялись: user_version=20, QualityAlgorithmVersion=6.
+
+НОВОЕ В 1.15.5:
+- «Похожие / копии»: итоговый карантин собирает все `IsMarkedForQuarantine` из всех VisualDuplicateGroups, а не только SelectedVisualDuplicateGroup.
+- «Серии»: тот же глобальный batch по всем BurstGroups; финальное подтверждение показывает общий count/groups/bytes.
+- До первого физического move валидируется, что в каждой затронутой группе/серии остаётся хотя бы один keeper; duplicate FileId между группами считается внутренней ошибкой и блокирует выполнение.
+- ApplyVisualGroups/ApplyBurstGroups сохраняют quarantine marks по FileId по всей вкладке через reload/quality refresh; `Снять ВСЕ галочки во вкладке` очищает глобально.
+- После успешного физического изменения derived views инвалидируются согласованно; перед сбросом marks текущей visual/burst вкладки фиксируются по FileId и передаются в reload, поэтому stale коллекция не остаётся, а failed marks восстанавливаются.
+- SQLite user_version=20, QualityAlgorithmVersion=6; миграции нет.
+
+НОВОЕ В 1.15.4:
+- «Люди → лица»: SelectionMode=Extended; Ctrl/Shift/Ctrl+A; batch assign/remove/ignore и drag всей выделенной пачки на другую группу.
+- Batch assign/remove лиц выполняются одной SQLite-транзакцией; batch ignore создаёт одну атомарную Undo-запись на всё выделение.
+- «Люди → группы»: несколько выбранных реальных групп можно drag&drop на целевую; target сохраняет имя/обложку. Drop на «Без группы» пакетно расформировывает выбранные группы.
+- Правый клик внутри текущего multi-select не схлопывает выделение в Library/People groups/People faces/Event photos; строка под курсором остаётся current-item для одиночных команд.
+- Event photo move и face move остаются в source, пока source существует; если source опустел/удалился — выбирается target.
+- Ctrl+A явно подключён ко всем основным multi-select спискам: Library, People groups/faces, Event photos.
+- Exact/Similar/Bursts/Timeline/Organization сохраняют специализированную семантику там, где общий drag&drop был бы двусмысленным или опасным.
+- SQLite user_version=20, QualityAlgorithmVersion=6; физические фото этими каталоговыми операциями не меняются.
+- BUILD_ON_CLEAN_WINDOWS.bat/bootstrap_windows.ps1 получают release-номер из VERSION.txt; bootstrap валидирует совпадение csproj Version и точную Version= строку final EXE self-test. Runtime UI version берётся из AppPaths.AppVersion.
 
 НОВОЕ В 1.15.3:
 - Release-hardening: runtime-номер версии берётся из assembly metadata; устранены stale 1.14.8 в startup log/catalog JSON/OpenCV diagnostics/self-test.
@@ -132,6 +161,25 @@ Photo Archive Manager — КАНОНИЧЕСКАЯ БАЗА 1.15.3
 - после быстрой раскладки можно сразу принять новый корень за основу: PAM переключает режим на полный и строит новый Preview, но сам второй перенос не запускает;
 - SQLite/Data/Quality schema не менялись.
 
+ФИНАЛЬНАЯ ПРИЁМКА 1.15.7:
+0. BUILD_ON_CLEAN_WINDOWS.bat: 0 C# warnings/errors; допустим только видимый non-fatal NU1900 при недоступности NuGet vulnerability data. Final-EXE portable_self_test RESULT=OK и Version=1.15.7.
+1. «Похожие / копии»: поставить quarantine-галки минимум в 3 разных визуальных группах, оставить в каждой хотя бы один keeper, открыть любую четвёртую/третью группу и нажать «В карантин все отмеченные». Итоговое превью обязано показать сумму по всем затронутым группам; после подтверждения должны уйти все отмеченные файлы, а не только текущая группа.
+2. «Похожие / копии»: после отметок в нескольких группах выполнить «Оценить качество» в одной группе и «Из кэша». Отметки остальных групп не должны исчезнуть. «Снять ВСЕ галочки во вкладке» очищает все группы.
+3. «Серии»: повторить тот же сценарий минимум для 3 серий; итоговое превью и execute должны быть глобальными по всей вкладке, marks должны переживать quality refresh/cache reload.
+4. В одной визуальной группе/серии отметить все кадры, а в других оставить корректные marks. Общая команда должна остановиться ДО любого физического move и явно указать проблемную группу/серию.
+5. После частичной ошибки одной группы остальные независимые группы продолжают обрабатываться; failed-файлы остаются отмеченными после reload для повторной попытки. После хотя бы одного успешного move зависимые derived views не должны показывать ушедшие в quarantine файлы без refresh.
+6. SQLite user_version=20, QualityAlgorithmVersion=6; Data/archive.db не мигрирует.
+
+ФИНАЛЬНАЯ ПРИЁМКА 1.15.4:
+0. BUILD_ON_CLEAN_WINDOWS.bat: 0 C# warnings/errors, final-EXE portable_self_test RESULT=OK и Version=1.15.4.
+1. «Люди → лица»: Ctrl/Shift/Ctrl+A выбрать 3 лица; drag одного из уже выделенных на группу B переносит все 3 одной операцией. Drop той же пачки на «Без группы» снимает принадлежность у всех. То же выделение через «Назначить…», «Убрать…», «Исключить…» применяется ко всей пачке.
+2. Batch ignore 3 лиц создаёт одну активную Undo-запись; Undo восстанавливает все 3 и прежние PersonId. Частичный batch при stale/missing face запрещён целиком.
+3. «Люди → группы»: Ctrl/Shift выбрать 3 группы A/B/C и перетащить выделение на D (либо одну из выбранных групп как target). Все source поглощаются target; имя/обложка target сохраняются; фотографии не меняются. Повторить drop на «Без группы» — выбранные real-группы расформировываются пачкой.
+4. Правый клик по строке внутри multi-select в Библиотеке, группах людей, лицах и фото события не снимает остальные выделения; одиночное действие использует именно строку под правым кликом. Правый клик по невыделенной строке выбирает только её.
+5. Библиотека/People groups/People faces/Event photos: Ctrl+A выбирает все элементы текущего списка; drag из уже выделенной строки использует всю пачку, а не одну картинку.
+6. Event photos: перенести 3 из 5 фото A → B — выбранным остаётся A; перенести оставшиеся 2 — A удаляется из каталога и выбирается B. Для лиц действует тот же source/target принцип.
+7. Exact duplicates сохраняют одного keeper; Similar/Bursts используют batch quarantine marks, а не произвольное перетаскивание вычисленных групп. SQLite user_version остаётся 20.
+
 ФИНАЛЬНАЯ ПРИЁМКА 1.15.3:
 0. BUILD_ON_CLEAN_WINDOWS.bat должен завершиться успешно: C# warnings недопустимы, final-EXE portable_self_test должен дать RESULT=OK и Version=1.15.3.
 1. Проверить события: drag&drop события A на B и обычное «Объединить…» сохраняют имя B/приоритет его обложки и оставляют выбранным B; фото физически не меняются.
@@ -254,4 +302,4 @@ Photo Archive Manager — КАНОНИЧЕСКАЯ БАЗА 1.15.3
 8. Повторить базовую UI-приёмку 1.10.2: цвета кнопок, адаптивные панели и непрерывный progress.
 
 ПЕРЕД ЛЮБЫМИ СЛЕДУЮЩИМИ ИЗМЕНЕНИЯМИ:
-прочитать HANDOFF_NEW_CHAT_OR_CODEX_RU.md, README_RU.md, VERSION.txt и актуальный код; работать от 1.15.3, не начинать архитектуру заново.
+прочитать HANDOFF_NEW_CHAT_OR_CODEX_RU.md, README_RU.md, VERSION.txt и актуальный код; работать от 1.15.7, не начинать архитектуру заново.

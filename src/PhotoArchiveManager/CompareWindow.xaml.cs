@@ -1,3 +1,4 @@
+using PhotoArchiveManager.Services;
 using PhotoArchiveManager.Models;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -49,6 +50,7 @@ public partial class CompareWindow : Window, INotifyPropertyChanged
     public CompareWindow(IReadOnlyList<VisualDuplicateFileItem> files, string headerText)
     {
         InitializeComponent();
+        Title = $"Сравнение похожих фотографий — Photo Archive Manager {AppPaths.AppVersion}";
         Owner = Application.Current.MainWindow;
         Photos = files.Take(8).ToList();
         HeaderText = files.Count > 8 ? headerText + " Показаны первые 8." : headerText;

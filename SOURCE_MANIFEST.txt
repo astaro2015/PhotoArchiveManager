@@ -1,12 +1,12 @@
-Photo Archive Manager 1.15.3 source manifest
+Photo Archive Manager 1.15.7 source manifest
 
-SOURCE_MANIFEST.txt
 .gitignore
 BUILD_ON_CLEAN_WINDOWS.bat
 HANDOFF_NEW_CHAT_OR_CODEX_RU.md
 NEXT_STAGE.txt
 PhotoArchiveManager.sln
 README_RU.md
+SOURCE_MANIFEST.txt
 START_NEW_CHAT_OR_CODEX_RU.txt
 VERSION.txt
 src/PhotoArchiveManager/App.xaml

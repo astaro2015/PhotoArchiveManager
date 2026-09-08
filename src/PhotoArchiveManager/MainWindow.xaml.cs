@@ -20,8 +20,13 @@ public partial class MainWindow : Window
     private PhotoItem? _eventPhotoDragCandidate;
     private long[] _eventPhotoDragFileIds = [];
     private const string EventPhotoDragFormat = "PhotoArchiveManager.EventPhotoDragData";
+    private Point _personGroupDragStart;
+    private PersonGroupItem? _personGroupDragCandidate;
+    private long[] _personGroupDragIds = [];
+    private const string PersonGroupDragFormat = "PhotoArchiveManager.PersonGroupDragData";
     private Point _personFaceDragStart;
     private FaceItem? _personFaceDragCandidate;
+    private long[] _personFaceDragIds = [];
     private const string PersonFaceDragFormat = "PhotoArchiveManager.PersonFaceDragData";
 
     private MainViewModel ViewModel => (MainViewModel)DataContext;
@@ -29,6 +34,7 @@ public partial class MainWindow : Window
     public MainWindow(MainViewModel viewModel)
     {
         InitializeComponent();
+        Title = $"Photo Archive Manager · {AppPaths.AppVersion}";
         DataContext = viewModel;
         Closing += (_, _) => ViewModel.RequestStop();
         PreviewKeyDown += MainWindow_PreviewKeyDown;
@@ -235,6 +241,12 @@ public partial class MainWindow : Window
             row.IsSelected = true;
         }
 
+        // Explorer-like multi-select: the row under the right click becomes the current inspector
+        // item, but the complete existing selection is restored immediately afterwards. This keeps
+        // both kinds of actions correct: single-item commands use the row that opened the menu, while
+        // batch commands still see the whole Ctrl/Shift selection.
+        var preserveMultiSelection = wasSelected && listBox.SelectionMode != SelectionMode.Single && listBox.SelectedItems.Count > 1;
+        var selectionSnapshot = preserveMultiSelection ? listBox.SelectedItems.Cast<object>().ToArray() : Array.Empty<object>();
         var item = row.DataContext;
         switch (listBox.Name)
         {
@@ -251,14 +263,8 @@ public partial class MainWindow : Window
                 ViewModel.SelectedBurstFile = burst;
                 break;
             case nameof(PersonGroupsList) when item is PersonGroupItem person:
-                // Do NOT assign SelectedPersonGroup when right-clicking one row of an existing
-                // multi-selection: because SelectedItem is two-way bound, that assignment may
-                // collapse SelectedItems to a single group. Keep the batch selection intact and
-                // remember only which selected row the user invoked the context menu on; that
-                // row becomes the preferred keeper/target in the merge picker.
                 ViewModel.SetPreferredPersonMergeTarget(person);
-                if (!wasSelected || listBox.SelectedItems.Count <= 1)
-                    ViewModel.SelectedPersonGroup = person;
+                ViewModel.SelectedPersonGroup = person;
                 break;
             case nameof(PersonFacesList) when item is FaceItem face:
                 ViewModel.SelectedPersonFace = face;
@@ -272,6 +278,15 @@ public partial class MainWindow : Window
             case nameof(QuarantineActionsList) when item is QuarantineActionItem quarantine:
                 ViewModel.SelectedQuarantineAction = quarantine;
                 break;
+        }
+
+        if (preserveMultiSelection)
+        {
+            foreach (var selected in selectionSnapshot)
+            {
+                if (!listBox.SelectedItems.Contains(selected))
+                    listBox.SelectedItems.Add(selected);
+            }
         }
 
         listBox.ScrollIntoView(item);
@@ -609,7 +624,13 @@ public partial class MainWindow : Window
         viewModel.UpdateSelectedPersonGroups(listBox.SelectedItems.Cast<PersonGroupItem>());
     }
 
-    private void PersonGroupsList_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void PersonFacesList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DataContext is not MainViewModel viewModel || sender is not ListBox listBox) return;
+        viewModel.UpdateSelectedPersonFaces(listBox.SelectedItems.Cast<FaceItem>());
+    }
+
+    private void MultiSelectList_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (sender is not ListBox listBox) return;
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
@@ -620,10 +641,69 @@ public partial class MainWindow : Window
         }
     }
 
+    private void PersonGroupsList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _personGroupDragStart = e.GetPosition(PersonGroupsList);
+        var item = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
+        _personGroupDragCandidate = item?.DataContext as PersonGroupItem;
+        _personGroupDragIds = [];
+
+        if (_personGroupDragCandidate is not { Id: > 0 } candidate) return;
+        if (item?.IsSelected == true)
+        {
+            _personGroupDragIds = PersonGroupsList.SelectedItems
+                .Cast<PersonGroupItem>()
+                .Where(x => x.Id > 0)
+                .Select(x => x.Id)
+                .Distinct()
+                .ToArray();
+        }
+
+        if (_personGroupDragIds.Length == 0)
+            _personGroupDragIds = [candidate.Id];
+    }
+
+    private void PersonGroupsList_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || _personGroupDragCandidate is not { Id: > 0 } candidate || !ViewModel.CanPerformCatalogReview) return;
+        var current = e.GetPosition(PersonGroupsList);
+        if (Math.Abs(current.X - _personGroupDragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(current.Y - _personGroupDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+
+        var ids = _personGroupDragIds.Where(x => x > 0).Distinct().ToArray();
+        if (ids.Length == 0) ids = [candidate.Id];
+        var data = new DataObject();
+        data.SetData(PersonGroupDragFormat, new PersonGroupDragData(ids));
+        try { DragDrop.DoDragDrop(PersonGroupsList, data, DragDropEffects.Move); }
+        finally
+        {
+            _personGroupDragCandidate = null;
+            _personGroupDragIds = [];
+        }
+    }
+
     private void PersonFacesList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         _personFaceDragStart = e.GetPosition(PersonFacesList);
-        _personFaceDragCandidate = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext as FaceItem;
+        var item = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
+        _personFaceDragCandidate = item?.DataContext as FaceItem;
+        _personFaceDragIds = [];
+
+        if (_personFaceDragCandidate is not { FaceId: > 0 } candidate) return;
+        // Preserve the current multi-selection before WPF's normal mouse-down processing can
+        // collapse it to the row under the pointer. This mirrors EventPhotosList exactly.
+        if (item?.IsSelected == true)
+        {
+            _personFaceDragIds = PersonFacesList.SelectedItems
+                .Cast<FaceItem>()
+                .Where(x => x.FaceId > 0)
+                .Select(x => x.FaceId)
+                .Distinct()
+                .ToArray();
+        }
+
+        if (_personFaceDragIds.Length == 0)
+            _personFaceDragIds = [candidate.FaceId];
     }
 
     private void PersonFacesList_PreviewMouseMove(object sender, MouseEventArgs e)
@@ -633,36 +713,124 @@ public partial class MainWindow : Window
         if (Math.Abs(current.X - _personFaceDragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
             Math.Abs(current.Y - _personFaceDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
 
-        var face = _personFaceDragCandidate;
+        var ids = _personFaceDragIds.Where(x => x > 0).Distinct().ToArray();
+        if (ids.Length == 0) ids = [_personFaceDragCandidate.FaceId];
         var data = new DataObject();
-        data.SetData(PersonFaceDragFormat, new PersonFaceDragData(face.FaceId, face.PersonId, face.FileName, face.GroupDisplay));
+        data.SetData(PersonFaceDragFormat, new PersonFaceDragData(ids, _personFaceDragCandidate.PersonId, _personFaceDragCandidate.GroupDisplay));
         try { DragDrop.DoDragDrop(PersonFacesList, data, DragDropEffects.Move); }
-        finally { _personFaceDragCandidate = null; }
+        finally
+        {
+            _personFaceDragCandidate = null;
+            _personFaceDragIds = [];
+        }
     }
 
     private void PersonGroupsList_PreviewDragOver(object sender, DragEventArgs e)
     {
         var target = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext as PersonGroupItem;
-        var payload = e.Data.GetDataPresent(PersonFaceDragFormat) ? e.Data.GetData(PersonFaceDragFormat) as PersonFaceDragData : null;
-        e.Effects = ViewModel.CanPerformCatalogReview && target is { Id: > 0 } && payload is not null && target.Id != payload.SourcePersonId
-            ? DragDropEffects.Move : DragDropEffects.None;
+        if (!ViewModel.CanPerformCatalogReview || target is null)
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Data.GetDataPresent(PersonGroupDragFormat))
+        {
+            var payload = e.Data.GetData(PersonGroupDragFormat) as PersonGroupDragData;
+            var canDrop = payload is not null && (target.Id == 0
+                ? payload.SourcePersonIds.Any(x => x > 0)
+                : payload.SourcePersonIds.Any(x => x > 0 && x != target.Id));
+            e.Effects = canDrop ? DragDropEffects.Move : DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Data.GetDataPresent(PersonFaceDragFormat))
+        {
+            var payload = e.Data.GetData(PersonFaceDragFormat) as PersonFaceDragData;
+            var canDrop = payload is not null && payload.FaceIds.Length > 0 && (target.Id == 0
+                ? payload.SourcePersonId is > 0
+                : target.Id != payload.SourcePersonId);
+            e.Effects = canDrop ? DragDropEffects.Move : DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        e.Effects = DragDropEffects.None;
         e.Handled = true;
     }
 
     private async void PersonGroupsList_Drop(object sender, DragEventArgs e)
     {
-        if (!ViewModel.CanPerformCatalogReview || !e.Data.GetDataPresent(PersonFaceDragFormat)) return;
+        if (!ViewModel.CanPerformCatalogReview) return;
         var target = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext as PersonGroupItem;
-        var payload = e.Data.GetData(PersonFaceDragFormat) as PersonFaceDragData;
-        if (target is not { Id: > 0 } || payload is null || target.Id == payload.SourcePersonId) return;
-        var face = ViewModel.PersonFaces.FirstOrDefault(x => x.FaceId == payload.FaceId);
-        if (face is null) return;
-        var answer = MessageBox.Show(this,
-            $"Перенести лицо из фото «{payload.FileName}»\nиз группы «{payload.SourceGroupName}»\nв «{target.DisplayName}»?\n\nМеняется только каталог лиц PAM; фотография не изменяется.",
-            "Перенос лица", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
-        if (answer != MessageBoxResult.Yes) return;
-        try { await ViewModel.AssignFaceToPersonAsync(face, target.Id); }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Не удалось перенести лицо", MessageBoxButton.OK, MessageBoxImage.Error); }
+        if (target is null) return;
+
+        if (e.Data.GetDataPresent(PersonGroupDragFormat))
+        {
+            var payload = e.Data.GetData(PersonGroupDragFormat) as PersonGroupDragData;
+            var sourceIds = payload?.SourcePersonIds
+                .Where(x => x > 0 && (target.Id == 0 || x != target.Id))
+                .Distinct().ToArray() ?? [];
+            if (sourceIds.Length == 0) return;
+            var sources = ViewModel.PersonGroups.Where(x => sourceIds.Contains(x.Id)).ToList();
+            if (sources.Count == 0) return;
+            var faceCount = sources.Sum(x => x.FaceCount);
+
+            if (target.Id == 0)
+            {
+                var dissolveSourceText = sources.Count == 1 ? $"группу «{sources[0].DisplayName}»" : $"{sources.Count:N0} выбранных групп";
+                var dissolve = MessageBox.Show(this,
+                    $"Расформировать {dissolveSourceText} в «Без группы»?\n\n" +
+                    $"Лиц вернётся в «Без группы»: {faceCount:N0}. Исходные фотографии не изменяются.",
+                    "Расформировать группы людей", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
+                if (dissolve != MessageBoxResult.Yes) return;
+                try { await ViewModel.DissolvePersonGroupsAsync(sourceIds); }
+                catch (Exception ex) { MessageBox.Show(this, ex.Message, "Не удалось расформировать группы людей", MessageBoxButton.OK, MessageBoxImage.Error); }
+                return;
+            }
+
+            var sourceText = sources.Count == 1 ? $"«{sources[0].DisplayName}»" : $"{sources.Count:N0} выбранные группы";
+            var answer = MessageBox.Show(this,
+                $"Объединить {sourceText} с «{target.DisplayName}»?\n\n" +
+                $"В целевую группу будет перенесено лиц: {faceCount:N0}. Имя и обложка «{target.DisplayName}» сохранятся. " +
+                "Исходные фотографии не изменяются.",
+                "Объединить группы людей", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+            if (answer != MessageBoxResult.Yes) return;
+            try { await ViewModel.MergePersonGroupsIntoAsync(sourceIds, target.Id); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Не удалось объединить группы людей", MessageBoxButton.OK, MessageBoxImage.Error); }
+            return;
+        }
+
+        if (!e.Data.GetDataPresent(PersonFaceDragFormat)) return;
+        var facePayload = e.Data.GetData(PersonFaceDragFormat) as PersonFaceDragData;
+        if (facePayload is null || facePayload.FaceIds.Length == 0) return;
+        var faces = ViewModel.PersonFaces.Where(x => facePayload.FaceIds.Contains(x.FaceId)).ToArray();
+        if (faces.Length == 0) return;
+        var what = faces.Length == 1 ? $"лицо из фото «{faces[0].FileName}»" : $"{faces.Length:N0} выбранных лиц";
+
+        if (target.Id == 0)
+        {
+            if (facePayload.SourcePersonId is not > 0) return;
+            var unassign = MessageBox.Show(this,
+                $"Перенести {what}\nиз группы «{facePayload.SourceGroupName}»\nв «Без группы»?\n\n" +
+                "Меняется только каталог лиц PAM; фотографии не изменяются.",
+                "Убрать лица из группы", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+            if (unassign != MessageBoxResult.Yes) return;
+            try { await ViewModel.RemoveFacesToUngroupedAsync(faces); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Не удалось убрать лица из группы", MessageBoxButton.OK, MessageBoxImage.Error); }
+            return;
+        }
+
+        if (target.Id == facePayload.SourcePersonId) return;
+        var answerFaces = MessageBox.Show(this,
+            $"Перенести {what}\nиз группы «{facePayload.SourceGroupName}»\nв «{target.DisplayName}»?\n\n" +
+            "Меняется только каталог лиц PAM; фотографии не изменяются.",
+            "Перенос лиц", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+        if (answerFaces != MessageBoxResult.Yes) return;
+        try { await ViewModel.AssignFacesToPersonAsync(faces, target.Id); }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "Не удалось перенести лица", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void EventPhotosList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -889,7 +1057,8 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private sealed record PersonFaceDragData(long FaceId, long? SourcePersonId, string FileName, string SourceGroupName);
+    private sealed record PersonGroupDragData(long[] SourcePersonIds);
+    private sealed record PersonFaceDragData(long[] FaceIds, long? SourcePersonId, string SourceGroupName);
     private sealed record EventGroupDragData(long SourceEventId, string SourceEventName, int PhotoCount);
     private sealed record EventPhotoDragData(long SourceEventId, string SourceEventName, long[] FileIds);
 
